@@ -1,43 +1,42 @@
-# Build output
-build/
+tools/whisper-cli.exe
+tools/ffmpeg.exe
+temp/
+models/*.gguf
+models/*.bin
+Makefile
+data/
+config/*.json
+compile_commands.json
+CMakeFiles/
+CMakeCache.txt
 cmake-build-*/
-*.exe
-*.dll
+cmake_install.cmake
+build/
+# VS Code local settings
+# User private config
+# Runtime temporary files
+# Qt / CMake temporary files
+# Large third-party binaries and models
+# Keep directory placeholders / docs
+# Build output
+*.user
+*.pdb
 *.obj
 *.o
-*.a
 *.lib
-*.pdb
 *.ilk
-
-# Qt / CMake temporary files
-*.user
+*.exe
+*.dll
 *.autosave
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-Makefile
-compile_commands.json
-
-# VS Code local settings
+*.a
 .vscode/
-
-# Runtime temporary files
-temp/
-data/
-
-# User private config
-config/*.json
-!config/config.example.json
-
-# Large third-party binaries and models
-models/*.bin
-models/*.gguf
-tools/ffmpeg.exe
-tools/whisper-cli.exe
-
-# Keep directory placeholders / docs
-!models/README.md
-!models/.gitkeep
 !tools/README.md
 !tools/.gitkeep
+!models/README.md
+!models/.gitkeep
+!config/config.example.json
+
+
+
+
+
