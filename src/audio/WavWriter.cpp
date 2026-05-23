@@ -8,6 +8,7 @@ bool WavWriter::writePcm16ToWav(const QString &filePath,
                                 int sampleRate,
                                 int channels)
 {
+    // WavWriter 假设上游已经完成格式转换，这里只校验写文件所需的基本参数。
     if (filePath.isEmpty() || sampleRate <= 0 || channels <= 0)
     {
         return false;
@@ -19,6 +20,7 @@ bool WavWriter::writePcm16ToWav(const QString &filePath,
         return false;
     }
 
+    // WAV 的 fmt/data 字段需要从采样率、声道数和位深推导出字节率与块对齐。
     constexpr quint16 audioFormatPcm = 1;
     constexpr quint16 bitsPerSample = 16;
     const quint16 blockAlign = static_cast<quint16>(channels * bitsPerSample / 8);
@@ -30,6 +32,7 @@ bool WavWriter::writePcm16ToWav(const QString &filePath,
     out.setByteOrder(QDataStream::LittleEndian);
 
     // 标准 RIFF/WAVE 头，当前第一版只写入 16-bit PCM 裸数据。
+    // RIFF/WAVE 采用小端序，QDataStream 显式设置 LittleEndian。
     out.writeRawData("RIFF", 4);
     out << riffSize;
     out.writeRawData("WAVE", 4);

@@ -18,6 +18,10 @@ add_executable(VoiceFlowAI
     src/TaskConfig.h
     src/audio/AudioRecorder.h
     src/audio/AudioRecorder.cpp
+    src/audio/VadDetector.h
+    src/audio/VadDetector.cpp
+    src/audio/AudioChunker.h
+    src/audio/AudioChunker.cpp
     src/audio/WavWriter.h
     src/audio/WavWriter.cpp
 )
