@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(CMAKE_PREFIX_PATH "D:/software/Qt/6.8.3/mingw_64/lib/cmake")
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia)
 
 qt_standard_project_setup()
 
@@ -16,6 +16,10 @@ add_executable(VoiceFlowAI
     src/MainWindow.h
     src/MainWindow.cpp
     src/TaskConfig.h
+    src/audio/AudioRecorder.h
+    src/audio/AudioRecorder.cpp
+    src/audio/WavWriter.h
+    src/audio/WavWriter.cpp
 )
 
-target_link_libraries(VoiceFlowAI PRIVATE Qt6::Widgets)
+target_link_libraries(VoiceFlowAI PRIVATE Qt6::Widgets Qt6::Multimedia)
