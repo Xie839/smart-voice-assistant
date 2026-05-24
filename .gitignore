@@ -1,42 +1,75 @@
-tools/whisper-cli.exe
-tools/ffmpeg.exe
+# Build / cache / temp
+build/
 temp/
-models/*.gguf
-models/*.bin
-Makefile
-data/
-config/*.json
-compile_commands.json
+cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
-cmake-build-*/
 cmake_install.cmake
-build/
-# VS Code local settings
-# User private config
-# Runtime temporary files
-# Qt / CMake temporary files
-# Large third-party binaries and models
-# Keep directory placeholders / docs
-# Build output
+compile_commands.json
+Makefile
+
+# IDE / local
+.vscode/
 *.user
-*.pdb
-*.obj
-*.o
-*.lib
-*.ilk
+*.autosave
+
+# Python env/cache
+.venv-funasr/
+__pycache__/
+*.pyc
+.cache/
+modelscope_cache/
+
+# Binary / archive
 *.exe
 *.dll
-*.autosave
+*.onnx
+*.bin
+*.lib
 *.a
-.vscode/
+*.obj
+*.o
+*.pdb
+*.ilk
+*.tar.bz2
+*.zip
+*.7z
+
+# Models
+models/sherpa-onnx/
+models/*.bin
+models/**/*.onnx
+models/*.gguf
+models/funasr_cache/
+models/funasr/
+
+# Third-party binaries / model repos
+third_party/sherpa-onnx*/
+third_party/whisper.cpp/
+third_party/**/*.dll
+third_party/**/*.exe
+third_party/**/*.onnx
+third_party/**/*.lib
+third_party/**/*.a
+
+# Tools binaries
+tools/*.exe
+tools/*.dll
+tools/whisper-cli.exe
+tools/ffmpeg.exe
+
+# Data/config runtime
+data/
+config/*.json
+
+# Keep docs/templates/placeholders
+!README.md
+!.gitignore
+!CMakeLists.txt
+!src/**
+!config/config.example.json
 !tools/README.md
 !tools/.gitkeep
 !models/README.md
 !models/.gitkeep
-!config/config.example.json
-
-
-
-
-
+!third_party/README.md

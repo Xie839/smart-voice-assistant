@@ -445,6 +445,7 @@ void MainWindow::setupUi()
 
 void MainWindow::setupConnections()
 {
+    connect(this, &MainWindow::clearRequested, this, &MainWindow::resetTranscript);
     // 开始/停止只更新当前界面的运行态；真正的识别逻辑交给外部业务层处理。
     connect(startButton, &QPushButton::clicked, this, [this]()
             {
@@ -567,8 +568,41 @@ void MainWindow::appendRawText(const QString &text)
     // 新识别结果追加到末尾，保留逐句显示的阅读节奏。
     rawTextEdit->moveCursor(QTextCursor::End);
     rawTextEdit->insertPlainText(text);
-    rawTextEdit->insertPlainText("\n");
     rawTextEdit->moveCursor(QTextCursor::End);
+}
+
+void MainWindow::setRawText(const QString &text)
+{
+    rawTextEdit->setPlainText(text);
+    rawTextEdit->moveCursor(QTextCursor::End);
+}
+
+void MainWindow::handleAsrResult(const AsrResult &result)
+{
+    if (!result.success || result.text.trimmed().isEmpty())
+    {
+        return;
+    }
+
+    qint64 gapMs = 0;
+    if (lastResultEndTimeMs >= 0 && result.startTimeMs >= 0)
+    {
+        gapMs = qMax<qint64>(0, result.startTimeMs - lastResultEndTimeMs);
+    }
+
+    const QString assembledText = transcriptAssembler.appendSegment(result.text, gapMs);
+    setRawText(assembledText);
+
+    if (result.endTimeMs >= 0)
+    {
+        lastResultEndTimeMs = result.endTimeMs;
+    }
+}
+
+void MainWindow::resetTranscript()
+{
+    transcriptAssembler.clear();
+    lastResultEndTimeMs = -1;
 }
 
 void MainWindow::setOptimizedText(const QString &text)

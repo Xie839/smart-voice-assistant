@@ -4,14 +4,18 @@
 #include <QMessageBox>
 
 #include "MainWindow.h"
+#include "asr/AsrBackendManager.h"
 #include "audio/AudioRecorder.h"
 
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
+    qRegisterMetaType<AsrResult>("AsrResult");
+    qRegisterMetaType<AudioChunkInfo>("AudioChunkInfo");
 
     MainWindow window;
     AudioRecorder recorder;
+    AsrBackendManager asrManager;
 
     // MainWindow 只负责发出“开始输入”意图；实际麦克风采集由 AudioRecorder 管理。
     QObject::connect(&window, &MainWindow::startVoiceInputRequested,
@@ -48,9 +52,9 @@ int main(int argc, char *argv[])
                          window.setRunningStatus(stateText);
                      });
 
-    // chunk 路径留给后续 whisper.cpp 使用；界面只显示简短状态，不写入左侧原始文本框。
+    // chunk 路径交给 ASR 模块识别；界面只显示简短状态，不写入左侧原始文本框。
     QObject::connect(&recorder, &AudioRecorder::sentenceChunkReady,
-                     &window, [&window](const AudioChunkInfo &info)
+                     &window, [&window, &asrManager](const AudioChunkInfo &info)
                      {
                          const QString fileName = QFileInfo(info.wavPath).fileName();
                          window.setRunningStatus(
@@ -62,6 +66,35 @@ int main(int argc, char *argv[])
                          qDebug() << "Sentence chunk saved:" << info.wavPath
                                   << "durationMs=" << info.durationMs
                                   << "splitReason=" << info.splitReason;
+                         asrManager.transcribeAsync(info, window.currentTaskConfig());
+                     });
+
+    QObject::connect(&asrManager, &AsrBackendManager::transcribeStarted,
+                     &window, [&window](const QString &wavPath)
+                     {
+                         Q_UNUSED(wavPath);
+                         window.setRunningStatus("正在识别语音片段...");
+                     });
+
+    QObject::connect(&asrManager, &AsrBackendManager::transcribeFinished,
+                     &window, [&window](const AsrResult &result)
+                     {
+                         if (!result.success)
+                         {
+                             return;
+                         }
+
+                         window.handleAsrResult(result);
+                         window.setLastAsrTime(result.elapsedMs);
+                         window.setRunningStatus(QString("识别完成，耗时 %1 ms").arg(result.elapsedMs));
+                     });
+
+    QObject::connect(&asrManager, &AsrBackendManager::transcribeError,
+                     &window, [&window](const QString &wavPath, const QString &errorMessage)
+                     {
+                         Q_UNUSED(wavPath);
+                         window.setRunningStatus("识别错误：" + errorMessage);
+                         qDebug() << "[ASR] transcribeError:" << errorMessage;
                      });
 
     QObject::connect(&recorder, &AudioRecorder::recordingWarning,

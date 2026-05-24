@@ -14,15 +14,15 @@ AudioChunker::AudioChunker()
 
 void AudioChunker::startSession(const QString &newSessionId, const QAudioFormat &newFormat)
 {
-    // 每次点击“开始输入”都会建立一个新会话，chunkIndex 从 0 重新计数。
     sessionId = sanitizeFilePart(newSessionId).isEmpty()
                     ? QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss")
                     : sanitizeFilePart(newSessionId);
     format = newFormat;
     currentPcm16.clear();
     chunkIndex = 0;
+    nextSequenceId = 0;
+    sessionCursorMs = 0;
 
-    // 开始录音时立即创建 temp/chunks，便于确认 VAD 模块已经启动。
     QDir dir(QCoreApplication::applicationDirPath());
     if (!dir.exists("temp/chunks") && !dir.mkpath("temp/chunks"))
     {
@@ -36,13 +36,11 @@ void AudioChunker::startSession(const QString &newSessionId, const QAudioFormat 
 
 void AudioChunker::appendAudio(const QByteArray &pcm16Data)
 {
-    // AudioRecorder 已经保证这里传入的是单声道 PCM16，因此可以直接拼接。
     currentPcm16.append(pcm16Data);
 }
 
-AudioChunkInfo AudioChunker::saveCurrentChunk(const QString &splitReason)
+AudioChunkInfo AudioChunker::saveCurrentChunk(const QString &splitReason, qint64 startTimeMs, qint64 endTimeMs)
 {
-    // 保存时返回完整元信息，后续 whisper.cpp 可以直接使用 wavPath 做识别。
     AudioChunkInfo info;
     info.sessionId = sessionId;
     info.durationMs = currentDurationMs();
@@ -50,14 +48,40 @@ AudioChunkInfo AudioChunker::saveCurrentChunk(const QString &splitReason)
 
     if (!hasValidAudio())
     {
-        // 没有有效音频时清空缓存即可，不生成空 WAV。
         clearCurrentChunk();
         return info;
     }
 
     ++chunkIndex;
     info.chunkIndex = chunkIndex;
+    info.sequenceId = nextSequenceId++;
     info.wavPath = buildChunkFilePath();
+
+    if (startTimeMs < 0 && endTimeMs < 0)
+    {
+        info.startTimeMs = sessionCursorMs;
+        info.endTimeMs = sessionCursorMs + info.durationMs;
+    }
+    else if (startTimeMs >= 0 && endTimeMs < 0)
+    {
+        info.startTimeMs = startTimeMs;
+        info.endTimeMs = startTimeMs + info.durationMs;
+    }
+    else if (startTimeMs < 0 && endTimeMs >= 0)
+    {
+        info.endTimeMs = endTimeMs;
+        info.startTimeMs = qMax<qint64>(0, endTimeMs - info.durationMs);
+    }
+    else
+    {
+        info.startTimeMs = startTimeMs;
+        info.endTimeMs = endTimeMs;
+    }
+
+    if (info.endTimeMs < info.startTimeMs)
+    {
+        info.endTimeMs = info.startTimeMs + info.durationMs;
+    }
 
     if (!WavWriter::writePcm16ToWav(info.wavPath,
                                     currentPcm16,
@@ -71,8 +95,12 @@ AudioChunkInfo AudioChunker::saveCurrentChunk(const QString &splitReason)
     {
         qDebug() << "Chunk saved:" << info.wavPath
                  << "chunkIndex=" << info.chunkIndex
+                 << "sequenceId=" << info.sequenceId
+                 << "startTimeMs=" << info.startTimeMs
+                 << "endTimeMs=" << info.endTimeMs
                  << "durationMs=" << info.durationMs
                  << "splitReason=" << info.splitReason;
+        sessionCursorMs = qMax(sessionCursorMs, info.endTimeMs);
     }
 
     clearCurrentChunk();
@@ -105,7 +133,6 @@ int AudioChunker::currentDurationMs() const
 
 QString AudioChunker::buildChunkFilePath() const
 {
-    // chunk 是后续 ASR 的最小处理单元，固定保存到 temp/chunks。
     QDir dir(QCoreApplication::applicationDirPath());
     if (!dir.exists("temp/chunks"))
     {

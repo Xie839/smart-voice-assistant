@@ -19,9 +19,9 @@ struct VadConfig
     int sampleRate = 16000;
     int frameMs = 30;
     int noiseEstimateMs = 1000;
-    int speechStartMs = 200;
+    int speechStartMs = 120;
     int speechEndSilenceMs = 1000;
-    int minSpeechMs = 500;
+    int minSpeechMs = 400;
     int maxSegmentMs = 15000;
     float thresholdRatio = 2.0f;
     float minThreshold = 0.005f;

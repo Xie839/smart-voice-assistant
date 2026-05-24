@@ -1,38 +1,92 @@
+# VoiceFlow AI
+
+VoiceFlow AI 是一个基于 Qt 的 Windows 桌面端实时语音转文本工具。  
+当前版本采用 **sherpa-onnx + Paraformer 中文 ONNX** 作为唯一 ASR 后端。
+
+## 当前主流程
+
+麦克风录音  
+→ VAD 自动分句  
+→ chunk WAV  
+→ `sherpa-onnx-offline.exe` + Paraformer 识别  
+→ 文本清洗 / 简繁归一化 / 标点恢复  
+→ TranscriptAssembler 聚合显示到左侧“原始识别文本”
+
 ## 当前进度
 
-当前版本已完成以下模块：
+1. Qt 主界面（实时输入工作流）已完成。
+2. 麦克风录音与 WAV 保存已完成（完整录音保存到 `temp/recordings/`）。
+3. VAD 自动分句已完成（chunk 保存到 `temp/chunks/`）。
+4. sherpa-onnx / Paraformer 中文识别已完成。
+5. sherpa-onnx 离线标点恢复已接入，失败时回退规则标点。
+6. TranscriptAssembler 已接入，实时结果不再按 chunk 机械换行。
+7. ASR 支持小并发（默认 `maxConcurrentAsr = 2`），并按 `sequenceId` 有序输出，避免乱序。
 
-### 1. Qt Windows 桌面端主界面模块
+## 关键参数（默认）
 
-- 左侧导航栏：实时语音输入、本地文件转写、历史记录、设置
-- 实时语音输入主页面布局
-- 识别模型选择：tiny 极速模式、base 均衡模式、small 高准确模式
-- 文本处理模式选择：仅识别、离线优化
-- 当前词库选择：通用词库、编程词库、学术词库、自定义词库
-- 原始识别文本与优化后文本双文本区域
-- 基础操作按钮和后续模块接口预留
+- `preRollMs = 500`
+- `speechStartMs = 120`
+- `speechEndSilenceMs = 1000`
+- `minSpeechMs = 400`
+- `maxSegmentMs = 15000`
+- `DISPLAY_PARAGRAPH_GAP_MS = 1600`（TranscriptAssembler 段落换行阈值）
 
-### 2. 麦克风录音与 WAV 保存模块
+## 目录约定
 
-- 点击“开始输入”后可以启动系统默认麦克风录音
-- 点击“停止”后可以停止录音
-- 录音文件会保存到 `temp/recordings/` 目录
-- 支持将录音结果保存为 WAV 文件
-- 底部状态栏显示录音状态和保存路径
-- 原始识别文本框保留给后续 ASR 识别结果显示
+```text
+third_party/
+  sherpa-onnx-.../bin/sherpa-onnx-offline.exe
+  sherpa-onnx-.../bin/sherpa-onnx-offline-punctuation.exe
 
-### 3. VAD 自动分句模块
+models/
+  sherpa-onnx/paraformer-zh/model.int8.onnx
+  sherpa-onnx/paraformer-zh/tokens.txt
+  sherpa-onnx/punctuation/...
 
-- 实时计算麦克风音频能量
-- 支持开始录音后的环境噪声估计
-- 能判断开始说话、正在说话、停顿和一句话结束
-- 能在检测到一句话结束后自动保存 chunk WAV 文件
-- chunk 文件保存到 `temp/chunks/` 目录
-- 当前版本仍未接入 whisper.cpp，因此 chunk 还不会转换为文字
-- 已为麦克风录音与 VAD 自动分句模块补充关键实现注释，方便理解音频采集、格式转换、RMS-VAD 状态判断和 chunk 保存流程。
+temp/
+  chunks/
+  recordings/
+  asr/
+```
 
-## 后续计划
+## 技术栈
 
-- 集成 whisper.cpp，将 VAD 保存的 chunk WAV 转换为文字
-- 将识别出的文字逐句显示到“原始识别文本”框
-- 在识别文字基础上继续接入离线优化、AI 智能优化和历史记录能力
+- Qt 6.8.3
+- CMake
+- MinGW 64-bit
+- Qt Widgets
+- Qt Multimedia
+- sherpa-onnx
+- Paraformer 中文 ONNX 模型
+- VAD 自动分句
+- 标点恢复
+- 文本后处理
+- TranscriptAssembler 文本聚合
+
+## 第三方依赖说明
+
+1. sherpa-onnx 是第三方开源离线语音识别部署框架。  
+2. Paraformer 中文 ONNX 模型是第三方预训练模型。  
+3. `sherpa-onnx-offline.exe` 与 `sherpa-onnx-offline-punctuation.exe` 为第三方工具。  
+4. 本项目没有训练语音识别模型，也不声称模型原创。  
+
+## 本项目原创实现
+
+- 桌面端交互与工作流设计
+- 麦克风录音模块封装
+- VAD 自动分句
+- chunk 管理
+- sherpa-onnx 调用封装
+- ASR 小并发与按序输出
+- 文本清洗、标点恢复与聚合显示
+
+## 运行说明
+
+1. 确保 `third_party` 下存在 sherpa 可执行文件。  
+2. 确保 `models/sherpa-onnx/paraformer-zh/` 下存在 `model.int8.onnx` 和 `tokens.txt`。  
+3. 如果标点模型缺失，主识别仍可运行，但会回退到规则标点。  
+4. 如果 sherpa 工具或主模型缺失，程序会报错提示，不会崩溃。  
+
+## 历史说明
+
+项目早期尝试过其他离线 ASR 路线；当前主分支运行依赖已经统一到 sherpa-onnx / Paraformer。
