@@ -29,6 +29,8 @@ add_executable(VoiceFlowAI
     src/audio/AudioChunker.cpp
     src/audio/WavWriter.h
     src/audio/WavWriter.cpp
+    src/media/FfmpegAudioConverter.h
+    src/media/FfmpegAudioConverter.cpp
     src/asr/AsrResult.h
     src/asr/TranscriptAssembler.h
     src/asr/TranscriptAssembler.cpp

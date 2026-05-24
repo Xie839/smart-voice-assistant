@@ -1,9 +1,13 @@
 #include <QApplication>
+#include <QDateTime>
 #include <QDebug>
 #include <QDialog>
+#include <QDir>
 #include <QFileInfo>
 #include <QMessageBox>
 #include <QProcessEnvironment>
+#include <QStringList>
+#include <QUuid>
 
 #include "MainWindow.h"
 #include "ai/AiConfigDialog.h"
@@ -12,6 +16,8 @@
 #include "asr/AsrBackendManager.h"
 #include "audio/AudioRecorder.h"
 #include "config/AppConfig.h"
+#include "history/HistoryManager.h"
+#include "media/FfmpegAudioConverter.h"
 
 namespace
 {
@@ -24,6 +30,34 @@ QString maskedProviderText(const QString &apiKey)
     return QString("DeepSeek(%1****%2)")
         .arg(apiKey.left(4), apiKey.right(4));
 }
+
+bool isWavFile(const QString &filePath)
+{
+    return QFileInfo(filePath).suffix().compare("wav", Qt::CaseInsensitive) == 0;
+}
+
+bool isSupportedMediaFile(const QString &filePath)
+{
+    static const QStringList supported = {
+        "wav", "mp3", "m4a", "aac", "flac", "ogg",
+        "mp4", "mov", "avi", "mkv", "wmv"};
+    return supported.contains(QFileInfo(filePath).suffix().toLower());
+}
+
+QString buildConvertedWavPath(const QString &inputFilePath)
+{
+    QDir tempDir(QDir::current().filePath("temp/converted"));
+    if (!tempDir.exists())
+    {
+        tempDir.mkpath(".");
+    }
+
+    const QFileInfo info(inputFilePath);
+    const QString baseName = info.completeBaseName().isEmpty() ? "media" : info.completeBaseName();
+    const QString stamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+    const QString fileName = QString("%1_%2_converted.wav").arg(baseName, stamp);
+    return tempDir.filePath(fileName);
+}
 }
 
 int main(int argc, char *argv[])
@@ -35,8 +69,17 @@ int main(int argc, char *argv[])
     MainWindow window;
     AudioRecorder recorder;
     AsrBackendManager asrManager;
+    FfmpegAudioConverter ffmpegConverter;
     AppConfig appConfig;
     DeepSeekClient deepSeekClient;
+
+    bool filePreparationRunning = false;
+    bool fileTranscriptionRunning = false;
+    QString pendingSourceFilePath;
+    QString activeFileSourcePath;
+    QString activeFileTranscribeWavPath;
+    QString latestSavedSourceFilePath;
+    TaskConfig pendingFileTaskConfig;
 
     enum class AiAction
     {
@@ -112,9 +155,10 @@ int main(int argc, char *argv[])
     applyAiConfigToClient();
 
     QObject::connect(&window, &MainWindow::startVoiceInputRequested,
-                     &recorder, [&recorder](const TaskConfig &config)
+                     &recorder, [&recorder, &latestSavedSourceFilePath](const TaskConfig &config)
                      {
                          Q_UNUSED(config);
+                         latestSavedSourceFilePath.clear();
                          recorder.startRecording("recording");
                      });
 
@@ -125,14 +169,119 @@ int main(int argc, char *argv[])
                      });
 
     QObject::connect(&window, &MainWindow::fileTranscribeRequested,
-                     &window, [&window, &asrManager](const QString &filePath, const TaskConfig &config)
+                     &window, [&window,
+                               &asrManager,
+                               &ffmpegConverter,
+                               &filePreparationRunning,
+                               &fileTranscriptionRunning,
+                               &pendingSourceFilePath,
+                               &activeFileSourcePath,
+                               &activeFileTranscribeWavPath,
+                               &pendingFileTaskConfig](const QString &filePath, const TaskConfig &config)
                      {
                          if (filePath.trimmed().isEmpty())
                          {
                              window.setRunningStatus("请先选择文件");
                              return;
                          }
-                         asrManager.transcribeAsync(filePath, config);
+
+                         if (!QFileInfo::exists(filePath))
+                         {
+                             window.setRunningStatus("选择的文件不存在，请重新选择");
+                             return;
+                         }
+
+                         if (filePreparationRunning || fileTranscriptionRunning)
+                         {
+                             window.setRunningStatus("文件转写正在进行，请稍候");
+                             return;
+                         }
+
+                         if (!isSupportedMediaFile(filePath))
+                         {
+                             window.setRunningStatus("当前文件格式暂不支持");
+                             return;
+                         }
+
+                         pendingSourceFilePath = filePath;
+                         pendingFileTaskConfig = config;
+                         window.setOptimizedText("");
+                         window.setFileTranscriptionBusy(true);
+
+                         if (isWavFile(filePath))
+                         {
+                             fileTranscriptionRunning = true;
+                             activeFileSourcePath = filePath;
+                             activeFileTranscribeWavPath = filePath;
+                             pendingSourceFilePath.clear();
+                             window.setRunningStatus("正在转写本地文件...");
+                             asrManager.transcribeAsync(filePath, config);
+                             return;
+                         }
+
+                         QString ffmpegReason;
+                         if (!ffmpegConverter.isAvailable(&ffmpegReason))
+                         {
+                             window.setRunningStatus("文件转换失败：" + ffmpegReason);
+                             window.setFileTranscriptionBusy(false);
+                             return;
+                         }
+
+                         const QString convertedWavPath = buildConvertedWavPath(filePath);
+                         filePreparationRunning = true;
+                         window.setRunningStatus("正在提取音频并转换格式...");
+                         ffmpegConverter.convertToWavAsync(filePath, convertedWavPath);
+                     });
+
+    QObject::connect(&ffmpegConverter, &FfmpegAudioConverter::conversionStarted,
+                     &window, [&window]()
+                     {
+                         window.setRunningStatus("正在提取音频并转换格式...");
+                     });
+
+    QObject::connect(&ffmpegConverter, &FfmpegAudioConverter::conversionFinished,
+                     &window, [&window,
+                               &asrManager,
+                               &filePreparationRunning,
+                               &fileTranscriptionRunning,
+                               &pendingSourceFilePath,
+                               &activeFileSourcePath,
+                               &activeFileTranscribeWavPath,
+                               &pendingFileTaskConfig](const QString &outputWavPath)
+                     {
+                         filePreparationRunning = false;
+
+                         if (!QFileInfo::exists(outputWavPath))
+                         {
+                             fileTranscriptionRunning = false;
+                             window.setFileTranscriptionBusy(false);
+                             window.setRunningStatus("文件转换失败：未生成可用 WAV 文件");
+                             return;
+                         }
+
+                         activeFileSourcePath = pendingSourceFilePath;
+                         pendingSourceFilePath.clear();
+                         activeFileTranscribeWavPath = outputWavPath;
+                         fileTranscriptionRunning = true;
+                         window.setRunningStatus("音频预处理完成，开始转写...");
+                         asrManager.transcribeAsync(outputWavPath, pendingFileTaskConfig);
+                     });
+
+    QObject::connect(&ffmpegConverter, &FfmpegAudioConverter::conversionFailed,
+                     &window, [&window,
+                               &filePreparationRunning,
+                               &fileTranscriptionRunning,
+                               &pendingSourceFilePath,
+                               &activeFileSourcePath,
+                               &activeFileTranscribeWavPath](const QString &errorMessage)
+                     {
+                         filePreparationRunning = false;
+                         fileTranscriptionRunning = false;
+                         pendingSourceFilePath.clear();
+                         activeFileSourcePath.clear();
+                         activeFileTranscribeWavPath.clear();
+                         window.setFileTranscriptionBusy(false);
+                         window.setRunningStatus("文件转换失败：" + errorMessage);
                      });
 
     QObject::connect(&recorder, &AudioRecorder::recordingStarted,
@@ -170,29 +319,75 @@ int main(int argc, char *argv[])
                      });
 
     QObject::connect(&asrManager, &AsrBackendManager::transcribeStarted,
-                     &window, [&window](const QString &wavPath)
+                     &window, [&window, &fileTranscriptionRunning, &activeFileTranscribeWavPath](const QString &wavPath)
                      {
-                         Q_UNUSED(wavPath);
+                         if (fileTranscriptionRunning && wavPath == activeFileTranscribeWavPath)
+                         {
+                             window.setRunningStatus("正在转写本地文件...");
+                             return;
+                         }
+
                          window.setRunningStatus("正在识别语音片段...");
                      });
 
     QObject::connect(&asrManager, &AsrBackendManager::transcribeFinished,
-                     &window, [&window](const AsrResult &result)
+                     &window, [&window,
+                               &filePreparationRunning,
+                               &fileTranscriptionRunning,
+                               &activeFileSourcePath,
+                               &activeFileTranscribeWavPath,
+                               &latestSavedSourceFilePath](const AsrResult &result)
                      {
                          if (!result.success)
                          {
+                             if (fileTranscriptionRunning && result.wavPath == activeFileTranscribeWavPath)
+                             {
+                                 filePreparationRunning = false;
+                                 fileTranscriptionRunning = false;
+                                 activeFileSourcePath.clear();
+                                 activeFileTranscribeWavPath.clear();
+                                 window.setFileTranscriptionBusy(false);
+                             }
                              return;
                          }
 
                          window.handleAsrResult(result);
                          window.setLastAsrTime(result.elapsedMs);
+
+                         if (fileTranscriptionRunning && result.wavPath == activeFileTranscribeWavPath)
+                         {
+                             latestSavedSourceFilePath = activeFileSourcePath;
+                             filePreparationRunning = false;
+                             fileTranscriptionRunning = false;
+                             activeFileSourcePath.clear();
+                             activeFileTranscribeWavPath.clear();
+                             window.setFileTranscriptionBusy(false);
+                             window.setRunningStatus(QString("文件转写完成，耗时 %1 ms").arg(result.elapsedMs));
+                             return;
+                         }
+
                          window.setRunningStatus(QString("识别完成，耗时 %1 ms").arg(result.elapsedMs));
                      });
 
     QObject::connect(&asrManager, &AsrBackendManager::transcribeError,
-                     &window, [&window](const QString &wavPath, const QString &errorMessage)
+                     &window, [&window,
+                               &filePreparationRunning,
+                               &fileTranscriptionRunning,
+                               &activeFileSourcePath,
+                               &activeFileTranscribeWavPath](const QString &wavPath, const QString &errorMessage)
                      {
-                         Q_UNUSED(wavPath);
+                         if (fileTranscriptionRunning && wavPath == activeFileTranscribeWavPath)
+                         {
+                             filePreparationRunning = false;
+                             fileTranscriptionRunning = false;
+                             activeFileSourcePath.clear();
+                             activeFileTranscribeWavPath.clear();
+                             window.setFileTranscriptionBusy(false);
+                             window.setRunningStatus("文件转写失败：" + errorMessage);
+                             qDebug() << "[ASR] file transcribe error:" << errorMessage;
+                             return;
+                         }
+
                          window.setRunningStatus("识别错误：" + errorMessage);
                          qDebug() << "[ASR] transcribeError:" << errorMessage;
                      });
@@ -208,6 +403,60 @@ int main(int argc, char *argv[])
                      {
                          window.setRunningStatus("录音错误：" + errorMessage);
                          QMessageBox::warning(&window, "录音错误", errorMessage);
+                     });
+
+    QObject::connect(&window, &MainWindow::clearRequested,
+                     &window, [&latestSavedSourceFilePath]()
+                     {
+                         latestSavedSourceFilePath.clear();
+                     });
+
+    QObject::connect(&window, &MainWindow::saveRecordRequested,
+                     &window, [&window,
+                               &appConfig,
+                               &latestSavedSourceFilePath](const QString &rawText, const QString &optimizedText)
+                     {
+                         if (rawText.trimmed().isEmpty() && optimizedText.trimmed().isEmpty())
+                         {
+                             return;
+                         }
+
+                         HistoryRecord record;
+                         record.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                         record.createdAt = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+                         record.sourceType = latestSavedSourceFilePath.trimmed().isEmpty() ? "realtime" : "file";
+                         record.sourceFile = latestSavedSourceFilePath;
+                         record.rawText = rawText;
+                         record.optimizedText = optimizedText;
+                         record.model = "sherpa-onnx / Paraformer";
+                         record.aiModel = optimizedText.trimmed().isEmpty() ? QString() : appConfig.deepSeekConfig().model.trimmed();
+
+                         const QString timeTag = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm");
+                         if (record.sourceType == "file")
+                         {
+                             record.title = QString("本地文件转写 %1 %2")
+                                                .arg(QFileInfo(record.sourceFile).fileName(), timeTag);
+                         }
+                         else
+                         {
+                             record.title = "实时语音输入 " + timeTag;
+                         }
+
+                         HistoryManager historyManager;
+                         QString loadError;
+                         if (!historyManager.load(&loadError))
+                         {
+                             qWarning() << "[History] load before add failed:" << loadError;
+                         }
+
+                         QString error;
+                         if (!historyManager.addRecord(record, &error))
+                         {
+                             window.setRunningStatus("文件已保存，但写入历史记录失败：" + error);
+                             return;
+                         }
+
+                         window.setRunningStatus("已保存到 results，并写入历史记录");
                      });
 
     QObject::connect(&window, &MainWindow::openSettingsRequested, &window, [&]()

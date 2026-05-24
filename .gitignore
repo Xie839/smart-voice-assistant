@@ -1,6 +1,7 @@
 # Build / cache / temp
 build/
 temp/
+build/temp/
 cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
@@ -34,6 +35,19 @@ modelscope_cache/
 *.tar.bz2
 *.zip
 *.7z
+
+# Runtime media artifacts
+*.wav
+*.mp3
+*.m4a
+*.aac
+*.flac
+*.ogg
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.wmv
 
 # Models
 models/sherpa-onnx/
