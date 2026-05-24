@@ -130,6 +130,22 @@ temp/
 4. `config/config.json` 缺失时会自动从 `config/config.example.json` 初始化；
 5. 若配置了 `DEEPSEEK_API_KEY` 环境变量，程序将优先使用该 Key。
 
+## 本地音视频文件转写
+
+- 本地文件转写除 WAV 外，支持 `mp3 / m4a / aac / flac / ogg / mp4 / mov / avi / mkv / wmv`。
+- 对于非 WAV 文件，程序会先调用 ffmpeg 提取/转换音频，再复用现有 sherpa-onnx 识别流程。
+- 转换参数统一为：`16kHz + 单声道 + 16-bit PCM WAV`，便于与当前离线 ASR 对齐。
+- 转写完成后可继续使用 AI 智能优化、自定义提示词、保存、导出与历史记录。
+
+### ffmpeg 查找优先级
+
+1. `tools/ffmpeg/bin/ffmpeg.exe`
+2. `third_party/ffmpeg/bin/ffmpeg.exe`
+3. 应用程序目录下的 `ffmpeg.exe`
+4. 系统 PATH 中的 `ffmpeg`
+
+推荐随项目打包内置 ffmpeg，优先命中第 1 或第 2 路径。
+
 ## 界面说明（当前版本）
 
 主界面分为两个核心页面：
