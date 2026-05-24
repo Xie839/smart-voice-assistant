@@ -3,6 +3,8 @@
 
 #include <QMainWindow>
 #include "TaskConfig.h"
+#include "asr/AsrResult.h"
+#include "asr/TranscriptAssembler.h"
 
 class QLabel;
 class QTextEdit;
@@ -21,6 +23,9 @@ public:
 
 public slots:
     void appendRawText(const QString &text);
+    void setRawText(const QString &text);
+    void handleAsrResult(const AsrResult &result);
+    void resetTranscript();
     void setOptimizedText(const QString &text);
     void setRunningStatus(const QString &status);
     void setLastAsrTime(qint64 ms);
@@ -77,6 +82,8 @@ private:
     QString currentPage = "realtime";
     QString currentStatus = "等待输入";
     qint64 lastAsrTimeMs = -1;
+    qint64 lastResultEndTimeMs = -1;
+    TranscriptAssembler transcriptAssembler;
 
     bool aiConfigured = false;
     QString aiProvider = "";

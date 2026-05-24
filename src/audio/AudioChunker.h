@@ -12,6 +12,9 @@ struct AudioChunkInfo
 {
     QString sessionId;
     int chunkIndex = 0;
+    qint64 sequenceId = -1;
+    qint64 startTimeMs = -1;
+    qint64 endTimeMs = -1;
     QString wavPath;
     int durationMs = 0;
     QString splitReason;
@@ -31,7 +34,9 @@ public:
     // 追加 VAD 判定为有效语音或语音停顿的一帧 PCM16。
     void appendAudio(const QByteArray &pcm16Data);
     // 将当前缓存保存为 chunk WAV，并返回文件路径、时长和切分原因。
-    AudioChunkInfo saveCurrentChunk(const QString &splitReason);
+    AudioChunkInfo saveCurrentChunk(const QString &splitReason,
+                                    qint64 startTimeMs = -1,
+                                    qint64 endTimeMs = -1);
     void clearCurrentChunk();
     bool hasValidAudio() const;
     int currentDurationMs() const;
@@ -45,6 +50,8 @@ private:
     QAudioFormat format;
     QByteArray currentPcm16;
     int chunkIndex = 0;
+    qint64 nextSequenceId = 0;
+    qint64 sessionCursorMs = 0;
 };
 
 #endif

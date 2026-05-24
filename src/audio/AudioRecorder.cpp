@@ -9,8 +9,8 @@
 #include <QDebug>
 #include <QDir>
 #include <QMediaDevices>
-#include <QRegularExpression>
 #include <QMetaType>
+#include <QRegularExpression>
 #include <QtMath>
 
 namespace
@@ -81,9 +81,6 @@ bool AudioRecorder::startRecording(const QString &sessionId)
         return false;
     }
 
-    // Windows 下不同麦克风可能只暴露 48kHz、多声道或 Float 等格式。
-    // 这里不强行假设设备一定支持 16kHz 单声道，而是记录实际格式，
-    // 后续再为 VAD 和 WAV 保存分别做格式归一化。
     QString formatWarning;
     activeFormat = chooseRecordingFormat(&formatWarning);
     if (!activeFormat.isValid())
@@ -104,21 +101,26 @@ bool AudioRecorder::startRecording(const QString &sessionId)
              << "channelCount=" << activeFormat.channelCount()
              << "sampleFormat=" << sampleFormatName(activeFormat.sampleFormat());
 
-    // VAD 的帧长计算必须使用实际采样率，否则 48kHz 设备会被按 16kHz 错误切帧。
     vadConfig.sampleRate = activeFormat.sampleRate();
     vadDetector = VadDetector(vadConfig);
     vadDetector.reset();
 
-    // VAD 和 chunk 保存统一使用“实际采样率 + 单声道 + PCM16”。
-    // 第一版暂不做重采样，避免引入复杂 DSP；只保证帧大小和音频数据格式一致。
     pcm16Format = activeFormat;
     pcm16Format.setSampleFormat(QAudioFormat::Int16);
     pcm16Format.setChannelCount(1);
+
+    preRollMaxBytes = (pcm16Format.sampleRate() * preRollMs / 1000) * int(sizeof(qint16));
+    preRollBuffer.clear();
     audioChunker.startSession(sessionId, pcm16Format);
 
     pcmBuffer.clear();
     vadFrameBuffer.clear();
+    sessionElapsedMs = 0;
+    currentChunkStartMs = -1;
+    currentChunkLastAudioMs = -1;
+    chunkCollecting = false;
     lastVadStatus.clear();
+
     audioSource = new QAudioSource(inputDevice, activeFormat, this);
     audioSource->setBufferSize(activeFormat.bytesForDuration(500000));
 
@@ -129,7 +131,6 @@ bool AudioRecorder::startRecording(const QString &sessionId)
             emit recordingError("麦克风录音中断，请检查设备权限或占用情况。");
         } });
 
-    // QAudioSource 内部异步推送数据，readyRead 只把当前可读 PCM 追加到内存缓存，不阻塞 UI。
     audioDevice = audioSource->start();
     if (!audioDevice)
     {
@@ -162,6 +163,20 @@ QString AudioRecorder::stopRecording()
 
     recording = false;
 
+    const auto clearSessionBuffers = [this]()
+    {
+        pcmBuffer.clear();
+        vadFrameBuffer.clear();
+        preRollBuffer.clear();
+        outputPath.clear();
+        lastVadStatus.clear();
+        preRollMaxBytes = 0;
+        sessionElapsedMs = 0;
+        currentChunkStartMs = -1;
+        currentChunkLastAudioMs = -1;
+        chunkCollecting = false;
+    };
+
     if (audioDevice)
     {
         readAvailableAudio();
@@ -176,18 +191,17 @@ QString AudioRecorder::stopRecording()
         audioSource = nullptr;
     }
 
-    // 用户停止时可能正处在一句话中间，此时没有等到 SpeechEnd，
-    // 仍然把当前有效缓存保存为 manual_stop chunk，避免丢掉最后一句。
     if (audioChunker.hasValidAudio())
     {
-        saveCurrentChunk("manual_stop");
+        const qint64 chunkEndMs = currentChunkLastAudioMs >= 0 ? currentChunkLastAudioMs : sessionElapsedMs;
+        saveCurrentChunk("manual_stop", currentChunkStartMs, chunkEndMs);
     }
 
-    // 采集格式可能是 Int16/UInt8/Float；保存前统一转换成 WavWriter 支持的 PCM16。
     const QByteArray pcm16Data = convertToPcm16(pcmBuffer, activeFormat);
     if (pcm16Data.isEmpty() && !pcmBuffer.isEmpty())
     {
         emit recordingError("当前采样格式暂不支持转换");
+        clearSessionBuffers();
         return QString();
     }
 
@@ -200,14 +214,12 @@ QString AudioRecorder::stopRecording()
     if (!written)
     {
         emit recordingError("WAV 文件写入失败：" + outputPath);
+        clearSessionBuffers();
         return QString();
     }
 
     const QString savedPath = outputPath;
-    pcmBuffer.clear();
-    vadFrameBuffer.clear();
-    outputPath.clear();
-    lastVadStatus.clear();
+    clearSessionBuffers();
 
     emit recordingStopped(savedPath);
     return savedPath;
@@ -222,8 +234,6 @@ QAudioFormat AudioRecorder::chooseRecordingFormat(QString *warningMessage) const
 {
     const QAudioDevice inputDevice = QMediaDevices::defaultAudioInput();
 
-    // 理想格式适合后续 whisper.cpp：16kHz、单声道、Int16。
-    // 如果设备支持就直接用它；如果不支持，就回退到设备可用格式。
     QAudioFormat requestedFormat;
     requestedFormat.setSampleRate(16000);
     requestedFormat.setChannelCount(1);
@@ -243,7 +253,7 @@ QAudioFormat AudioRecorder::chooseRecordingFormat(QString *warningMessage) const
     {
         if (warningMessage)
         {
-            *warningMessage = "默认麦克风不支持 16000Hz 单声道 Int16，录音时使用设备支持的采样格式，保存时转换为 PCM16。";
+            *warningMessage = "默认麦克风不支持 16000Hz 单声道 Int16，录音时使用设备支持格式，保存时转换为 PCM16。";
         }
         return requestedWithPreferredSampleFormat;
     }
@@ -252,7 +262,7 @@ QAudioFormat AudioRecorder::chooseRecordingFormat(QString *warningMessage) const
     {
         if (warningMessage)
         {
-            *warningMessage = QString("默认麦克风不支持 16000Hz 单声道 Int16，已回退为设备首选格式 %1Hz/%2声道，保存时转换为 PCM16。")
+            *warningMessage = QString("默认麦克风不支持 16000Hz 单声道 Int16，已回退为设备首选格式 %1Hz/%2 声道，保存时转换为 PCM16。")
                                   .arg(preferredFormat.sampleRate())
                                   .arg(preferredFormat.channelCount());
         }
@@ -272,12 +282,10 @@ QByteArray AudioRecorder::convertToPcm16(const QByteArray &input, const QAudioFo
     switch (format.sampleFormat())
     {
     case QAudioFormat::Int16:
-        // 设备已经输出 16-bit PCM，直接交给 WavWriter 写入。
         return input.left(input.size() - (input.size() % int(sizeof(qint16))));
 
     case QAudioFormat::UInt8:
     {
-        // UInt8 音频以 128 为零点，转换到有符号 Int16 时需要先平移到 [-128, 127]。
         QByteArray output;
         output.resize(input.size() * int(sizeof(qint16)));
         auto *out = reinterpret_cast<qint16 *>(output.data());
@@ -293,7 +301,6 @@ QByteArray AudioRecorder::convertToPcm16(const QByteArray &input, const QAudioFo
 
     case QAudioFormat::Float:
     {
-        // Qt 的 Float 音频通常是 [-1.0, 1.0]，先裁剪再映射到 Int16 范围。
         const int sampleCount = input.size() / int(sizeof(float));
         QByteArray output;
         output.resize(sampleCount * int(sizeof(qint16)));
@@ -316,8 +323,6 @@ QByteArray AudioRecorder::convertToPcm16(const QByteArray &input, const QAudioFo
 
 QByteArray AudioRecorder::convertToMonoPcm16(const QByteArray &input, const QAudioFormat &format) const
 {
-    // VAD 只关心“整体说话能量”，多声道会让帧大小和 RMS 计算复杂化。
-    // 因此先把设备格式转成 PCM16，再将每个采样点的多声道平均成单声道。
     const QByteArray pcm16 = convertToPcm16(input, format);
     if (pcm16.isEmpty())
     {
@@ -353,7 +358,6 @@ QByteArray AudioRecorder::convertToMonoPcm16(const QByteArray &input, const QAud
 
 QString AudioRecorder::buildOutputPath(const QString &sessionId) const
 {
-    // 完整录音用于调试和回放，和 VAD chunk 分开保存，避免后续 ASR 只处理片段时混淆。
     QDir dir(QCoreApplication::applicationDirPath());
     if (!dir.exists("temp/recordings") && !dir.mkpath("temp/recordings"))
     {
@@ -387,11 +391,9 @@ void AudioRecorder::readAvailableAudio()
         return;
     }
 
-    // 完整录音缓存保留设备原始格式，停止时再转换为 WAV 可写的 PCM16。
     pcmBuffer.append(chunk);
     updateAudioLevel(chunk);
 
-    // VAD 流程必须使用单声道 PCM16：QAudioSource 可能返回 48kHz/4声道/Float 等格式。
     const QByteArray monoPcm16Chunk = convertToMonoPcm16(chunk, activeFormat);
     if (monoPcm16Chunk.isEmpty() && !chunk.isEmpty())
     {
@@ -404,7 +406,6 @@ void AudioRecorder::readAvailableAudio()
 
 void AudioRecorder::updateAudioLevel(const QByteArray &chunk)
 {
-    // audioLevelUpdated 预留给后续 UI 音量条；这里复用 VAD 的单声道 PCM16 数据口径。
     const QByteArray pcm16Chunk = convertToMonoPcm16(chunk, activeFormat);
     if (pcm16Chunk.size() < 2)
     {
@@ -436,8 +437,6 @@ void AudioRecorder::processPcm16Audio(const QByteArray &pcm16Data)
 
     vadFrameBuffer.append(pcm16Data);
 
-    // 输入已经是单声道 PCM16，因此一帧字节数只等于 frameSamples * sizeof(qint16)。
-    // 这里不能再乘设备原始 channelCount，否则多声道设备会导致 VAD 帧过长。
     const int frameSamples = pcm16Format.sampleRate() * vadConfig.frameMs / 1000;
     const int frameBytes = frameSamples * int(sizeof(qint16));
     if (frameBytes <= 0)
@@ -449,21 +448,32 @@ void AudioRecorder::processPcm16Audio(const QByteArray &pcm16Data)
     {
         const QByteArray frame = vadFrameBuffer.left(frameBytes);
         vadFrameBuffer.remove(0, frameBytes);
+        const qint64 frameStartMs = sessionElapsedMs;
+        const qint64 frameEndMs = sessionElapsedMs + vadConfig.frameMs;
 
         const VadState state = vadDetector.processPcm16Frame(frame);
         qDebug() << "VAD frame:"
                  << "state=" << vadStateName(state)
                  << "level=" << vadDetector.currentLevel()
                  << "threshold=" << vadDetector.currentThreshold();
-        handleVadState(state, frame);
+        handleVadState(state, frame, frameStartMs, frameEndMs);
+        sessionElapsedMs = frameEndMs;
+
+        if (!frame.isEmpty() && preRollMaxBytes > 0)
+        {
+            preRollBuffer.append(frame);
+            if (preRollBuffer.size() > preRollMaxBytes)
+            {
+                preRollBuffer.remove(0, preRollBuffer.size() - preRollMaxBytes);
+            }
+        }
     }
 }
 
-void AudioRecorder::handleVadState(VadState state, const QByteArray &frame)
+void AudioRecorder::handleVadState(VadState state, const QByteArray &frame, qint64 frameStartMs, qint64 frameEndMs)
 {
     if (vadDetector.isCalibratingNoise())
     {
-        // 录音开始的第一秒只估计环境噪声，不缓存 chunk，避免开头静音写入片段。
         emitVadStatus("正在进行环境噪声估计");
         return;
     }
@@ -473,27 +483,55 @@ void AudioRecorder::handleVadState(VadState state, const QByteArray &frame)
     case VadState::Silence:
         if (audioChunker.hasValidAudio())
         {
-            // 太短或未达到起始条件的声音会回到 Silence，清空缓存防止保存误触发。
             audioChunker.clearCurrentChunk();
         }
+        chunkCollecting = false;
+        currentChunkStartMs = -1;
+        currentChunkLastAudioMs = -1;
         emitVadStatus("等待语音输入");
         break;
 
     case VadState::SpeechStart:
+    {
         qDebug() << "VAD SpeechStart triggered";
-        // SpeechStart 表示连续超过阈值已满足起始时长，开始缓存当前句子。
+        chunkCollecting = true;
+
+        const qint64 preRollSamples = preRollBuffer.size() / int(sizeof(qint16));
+        const qint64 preRollDurationMs = pcm16Format.sampleRate() > 0
+                                             ? (preRollSamples * 1000 / pcm16Format.sampleRate())
+                                             : 0;
+        currentChunkStartMs = qMax<qint64>(0, frameStartMs - preRollDurationMs);
+
+        if (!preRollBuffer.isEmpty())
+        {
+            audioChunker.appendAudio(preRollBuffer);
+        }
         audioChunker.appendAudio(frame);
+        currentChunkLastAudioMs = frameEndMs;
+
         emitVadStatus("检测到语音，正在录入");
         break;
+    }
 
     case VadState::Speaking:
+        if (!chunkCollecting)
+        {
+            chunkCollecting = true;
+            currentChunkStartMs = frameStartMs;
+        }
         audioChunker.appendAudio(frame);
+        currentChunkLastAudioMs = frameEndMs;
         emitVadStatus("检测到语音，正在录入");
         break;
 
     case VadState::Pause:
-        // Pause 是句中短暂停顿，仍然追加音频，保留自然语句中的空隙。
+        if (!chunkCollecting)
+        {
+            chunkCollecting = true;
+            currentChunkStartMs = frameStartMs;
+        }
         audioChunker.appendAudio(frame);
+        currentChunkLastAudioMs = frameEndMs;
         emitVadStatus("检测到停顿");
         break;
 
@@ -501,12 +539,16 @@ void AudioRecorder::handleVadState(VadState state, const QByteArray &frame)
     {
         qDebug() << "VAD SpeechEnd triggered";
         audioChunker.appendAudio(frame);
+        currentChunkLastAudioMs = frameEndMs;
         emitVadStatus("一句话已结束，正在保存片段");
-        // SpeechEnd 立即保存 chunk，然后继续监听下一句话；max_duration 是防止超长句子的兜底切分。
+
         const QString reason = audioChunker.currentDurationMs() >= vadConfig.maxSegmentMs
                                    ? "max_duration"
                                    : "vad_silence";
-        saveCurrentChunk(reason);
+        saveCurrentChunk(reason, currentChunkStartMs, currentChunkLastAudioMs);
+        chunkCollecting = false;
+        currentChunkStartMs = -1;
+        currentChunkLastAudioMs = -1;
         emitVadStatus("等待语音输入");
         break;
     }
@@ -515,7 +557,6 @@ void AudioRecorder::handleVadState(VadState state, const QByteArray &frame)
 
 void AudioRecorder::emitVadStatus(const QString &stateText)
 {
-    // 状态文本去重，避免 30ms 一帧时频繁刷新状态栏。
     if (stateText == lastVadStatus)
     {
         return;
@@ -525,15 +566,15 @@ void AudioRecorder::emitVadStatus(const QString &stateText)
     emit vadStateChanged(stateText);
 }
 
-AudioChunkInfo AudioRecorder::saveCurrentChunk(const QString &splitReason)
+AudioChunkInfo AudioRecorder::saveCurrentChunk(const QString &splitReason, qint64 startTimeMs, qint64 endTimeMs)
 {
     qDebug() << "Saving current chunk:"
              << "reason=" << splitReason
-             << "durationMs=" << audioChunker.currentDurationMs();
+             << "durationMs=" << audioChunker.currentDurationMs()
+             << "startTimeMs=" << startTimeMs
+             << "endTimeMs=" << endTimeMs;
 
-    // chunk 写入 temp/chunks，完整 recording 写入 temp/recordings，二者用途不同：
-    // chunk 给后续 ASR 逐句识别，完整录音只作为调试回放。
-    AudioChunkInfo info = audioChunker.saveCurrentChunk(splitReason);
+    AudioChunkInfo info = audioChunker.saveCurrentChunk(splitReason, startTimeMs, endTimeMs);
     if (info.wavPath.isEmpty())
     {
         if (info.durationMs > 0)
@@ -544,6 +585,7 @@ AudioChunkInfo AudioRecorder::saveCurrentChunk(const QString &splitReason)
     }
 
     emit sentenceChunkReady(info);
-    qDebug() << "sentenceChunkReady emitted:" << info.wavPath;
+    qDebug() << "sentenceChunkReady emitted:" << info.wavPath
+             << "sequenceId=" << info.sequenceId;
     return info;
 }

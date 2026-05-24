@@ -53,9 +53,9 @@ private:
     void updateAudioLevel(const QByteArray &chunk);
     // 将单声道 PCM16 按 VadConfig::frameMs 切帧，再逐帧送入 VAD 状态机。
     void processPcm16Audio(const QByteArray &pcm16Data);
-    void handleVadState(VadState state, const QByteArray &frame);
+    void handleVadState(VadState state, const QByteArray &frame, qint64 frameStartMs, qint64 frameEndMs);
     void emitVadStatus(const QString &stateText);
-    AudioChunkInfo saveCurrentChunk(const QString &splitReason);
+    AudioChunkInfo saveCurrentChunk(const QString &splitReason, qint64 startTimeMs = -1, qint64 endTimeMs = -1);
 
 private:
     QAudioSource *audioSource = nullptr;
@@ -64,12 +64,19 @@ private:
     QAudioFormat pcm16Format;
     QByteArray pcmBuffer;
     QByteArray vadFrameBuffer;
+    QByteArray preRollBuffer;
     QString outputPath;
     QString lastVadStatus;
+    int preRollMs = 500;
+    int preRollMaxBytes = 0;
     VadConfig vadConfig;
     VadDetector vadDetector;
     AudioChunker audioChunker;
     bool recording = false;
+    qint64 sessionElapsedMs = 0;
+    qint64 currentChunkStartMs = -1;
+    qint64 currentChunkLastAudioMs = -1;
+    bool chunkCollecting = false;
 };
 
 #endif

@@ -1,7 +1,9 @@
 #include "WavWriter.h"
 
 #include <QDataStream>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 
 bool WavWriter::writePcm16ToWav(const QString &filePath,
                                 const QByteArray &pcmData,
@@ -10,6 +12,13 @@ bool WavWriter::writePcm16ToWav(const QString &filePath,
 {
     // WavWriter 假设上游已经完成格式转换，这里只校验写文件所需的基本参数。
     if (filePath.isEmpty() || sampleRate <= 0 || channels <= 0)
+    {
+        return false;
+    }
+
+    const QFileInfo fileInfo(filePath);
+    const QString parentDir = fileInfo.absolutePath();
+    if (!parentDir.isEmpty() && !QDir().mkpath(parentDir))
     {
         return false;
     }
