@@ -60,6 +60,8 @@ tools/ffmpeg.exe
 
 # Data/config runtime
 data/
+results/
+exports/
 config/*.json
 config/config.json
 .env

@@ -124,6 +124,17 @@ int main(int argc, char *argv[])
                          recorder.stopRecording();
                      });
 
+    QObject::connect(&window, &MainWindow::fileTranscribeRequested,
+                     &window, [&window, &asrManager](const QString &filePath, const TaskConfig &config)
+                     {
+                         if (filePath.trimmed().isEmpty())
+                         {
+                             window.setRunningStatus("请先选择文件");
+                             return;
+                         }
+                         asrManager.transcribeAsync(filePath, config);
+                     });
+
     QObject::connect(&recorder, &AudioRecorder::recordingStarted,
                      &window, [&window]()
                      {
