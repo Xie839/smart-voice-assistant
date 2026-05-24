@@ -2,15 +2,14 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
+
 #include "TaskConfig.h"
 #include "asr/AsrResult.h"
 #include "asr/TranscriptAssembler.h"
 
 class QLabel;
 class QTextEdit;
-class QComboBox;
 class QPushButton;
-class QFrame;
 
 class MainWindow : public QMainWindow
 {
@@ -35,10 +34,8 @@ public slots:
 signals:
     void startVoiceInputRequested(TaskConfig config);
     void stopVoiceInputRequested();
-
     void fileTranscribeRequested(const QString &filePath, TaskConfig config);
 
-    void offlineOptimizeRequested(const QString &rawText);
     void aiOptimizeRequested(const QString &rawText);
     void customPromptOptimizeRequested(const QString &rawText);
 
@@ -51,9 +48,26 @@ signals:
     void testAiConnectionRequested();
 
 private:
+    enum class PageMode
+    {
+        RealtimeInput,
+        FileTranscription
+    };
+
     void setupUi();
     void setupConnections();
+    void setPageMode(PageMode mode);
     void updateStatusBar();
+    void updateNavButtonStyles();
+    void updateLeftActionButtons();
+    void restoreStartButtonStyle();
+    void restoreRunBadgeStyle();
+    QString rawText() const;
+    QString optimizedText() const;
+    QString preferredOutputText() const;
+    QString buildExportContent() const;
+    void clearCurrentTexts();
+    bool writeUtf8File(const QString &filePath, const QString &content, QString *errorMessage = nullptr) const;
     QString chooseLocalFile();
 
 private:
@@ -62,17 +76,17 @@ private:
     QLabel *runStatusBadge = nullptr;
     QLabel *statusBarLabel = nullptr;
     QLabel *aiStatusLabel = nullptr;
-
-    QComboBox *modelComboBox = nullptr;
-    QComboBox *textModeComboBox = nullptr;
-    QComboBox *wordLibComboBox = nullptr;
+    QLabel *asrInfoLabel = nullptr;
 
     QTextEdit *rawTextEdit = nullptr;
     QTextEdit *optimizedTextEdit = nullptr;
 
+    QPushButton *realtimeNavButton = nullptr;
+    QPushButton *fileNavButton = nullptr;
     QPushButton *startButton = nullptr;
     QPushButton *stopButton = nullptr;
     QPushButton *fileButton = nullptr;
+    QPushButton *startFileTranscribeButton = nullptr;
     QPushButton *copyButton = nullptr;
     QPushButton *exportButton = nullptr;
     QPushButton *saveButton = nullptr;
@@ -82,14 +96,15 @@ private:
     QPushButton *settingsButton = nullptr;
     QPushButton *testAiButton = nullptr;
 
-    QString currentPage = "realtime";
+    PageMode currentPage = PageMode::RealtimeInput;
     QString currentStatus = "等待输入";
+    QString selectedFilePath;
     qint64 lastAsrTimeMs = -1;
     qint64 lastResultEndTimeMs = -1;
     TranscriptAssembler transcriptAssembler;
 
     bool aiConfigured = false;
-    QString aiProvider = "";
+    QString aiProvider;
 };
 
 #endif
