@@ -231,16 +231,21 @@ void DeepSeekClient::sendRequest(const QJsonObject &payload, bool forTest)
     emit requestStarted();
 
     const int timeoutMs = m_config.timeoutMs > 0 ? m_config.timeoutMs : 60000;
-    QTimer::singleShot(timeoutMs, this, [reply]()
+    QPointer<QNetworkReply> safeReply(reply);
+    QTimer::singleShot(timeoutMs, this, [safeReply]()
                        {
-        if (reply && reply->isRunning())
+        if (safeReply && safeReply->isRunning())
         {
-            reply->setProperty("timed_out", true);
-            reply->abort();
+            safeReply->setProperty("timed_out", true);
+            safeReply->abort();
         } });
 
     connect(reply, &QNetworkReply::finished, this, [this, reply]()
             {
+        if (m_activeReply == reply)
+        {
+            m_activeReply.clear();
+        }
         const bool forTest = reply->property("for_test").toBool();
         const bool timedOut = reply->property("timed_out").toBool();
         const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
