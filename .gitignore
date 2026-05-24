@@ -61,6 +61,10 @@ tools/ffmpeg.exe
 # Data/config runtime
 data/
 config/*.json
+config/config.json
+.env
+*.key
+*.secret
 
 # Keep docs/templates/placeholders
 !README.md

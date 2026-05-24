@@ -30,6 +30,7 @@ public slots:
     void setRunningStatus(const QString &status);
     void setLastAsrTime(qint64 ms);
     void setAiConfigured(bool configured, const QString &provider = "");
+    void setAiOptimizeBusy(bool busy);
 
 signals:
     void startVoiceInputRequested(TaskConfig config);
@@ -39,6 +40,7 @@ signals:
 
     void offlineOptimizeRequested(const QString &rawText);
     void aiOptimizeRequested(const QString &rawText);
+    void customPromptOptimizeRequested(const QString &rawText);
 
     void copyRequested(const QString &text);
     void exportRequested(const QString &rawText, const QString &optimizedText);
@@ -76,6 +78,7 @@ private:
     QPushButton *saveButton = nullptr;
     QPushButton *clearButton = nullptr;
     QPushButton *aiOptimizeButton = nullptr;
+    QPushButton *customPromptButton = nullptr;
     QPushButton *settingsButton = nullptr;
     QPushButton *testAiButton = nullptr;
 

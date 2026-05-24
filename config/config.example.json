@@ -1,4 +1,10 @@
 {
-  "appName": "VoiceFlow AI",
-  "description": "Example local config placeholder"
+  "deepseek": {
+    "base_url": "https://api.deepseek.com",
+    "api_key": "",
+    "model": "deepseek-v4-flash",
+    "temperature": 0.3,
+    "max_tokens": 2048,
+    "timeout_ms": 60000
+  }
 }

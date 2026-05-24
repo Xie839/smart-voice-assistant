@@ -12,7 +12,7 @@ endif()
 get_filename_component(DEFAULT_MINGW_BIN_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
 set(MINGW_BIN_DIR "${DEFAULT_MINGW_BIN_DIR}" CACHE PATH "MinGW runtime DLL directory")
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia Network)
 
 qt_standard_project_setup()
 
@@ -40,9 +40,17 @@ add_executable(VoiceFlowAI
     src/asr/SherpaOnnxAsrEngine.cpp
     src/asr/AsrBackendManager.h
     src/asr/AsrBackendManager.cpp
+    src/config/AppConfig.h
+    src/config/AppConfig.cpp
+    src/ai/DeepSeekClient.h
+    src/ai/DeepSeekClient.cpp
+    src/ai/AiConfigDialog.h
+    src/ai/AiConfigDialog.cpp
+    src/ai/CustomPromptDialog.h
+    src/ai/CustomPromptDialog.cpp
 )
 
-target_link_libraries(VoiceFlowAI PRIVATE Qt6::Widgets Qt6::Multimedia)
+target_link_libraries(VoiceFlowAI PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network)
 
 set(MINGW_RUNTIME_DLLS
     libgcc_s_seh-1.dll
