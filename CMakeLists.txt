@@ -40,6 +40,9 @@ add_executable(VoiceFlowAI
     src/asr/SherpaOnnxAsrEngine.cpp
     src/asr/AsrBackendManager.h
     src/asr/AsrBackendManager.cpp
+    src/history/HistoryRecord.h
+    src/history/HistoryManager.h
+    src/history/HistoryManager.cpp
     src/config/AppConfig.h
     src/config/AppConfig.cpp
     src/ai/DeepSeekClient.h
