@@ -328,6 +328,7 @@ void MainWindow::setupUi()
     // 离线优化按钮是局部按钮，不需要作为成员保存；AI 优化按钮已有后续槽函数使用。
     auto *offlineOptimizeButton = new QPushButton("离线优化", mainPanel);
     aiOptimizeButton = new QPushButton("AI智能优化", mainPanel);
+    customPromptButton = new QPushButton("自定义提示词", mainPanel);
 
     startButton->setStyleSheet(
         "QPushButton { background-color: #2563eb; color: white; border: none;"
@@ -351,6 +352,7 @@ void MainWindow::setupUi()
     fileButton->setStyleSheet(normalButtonStyle);
     offlineOptimizeButton->setStyleSheet(normalButtonStyle);
     aiOptimizeButton->setStyleSheet(aiButtonStyle);
+    customPromptButton->setStyleSheet(normalButtonStyle);
     copyButton->setStyleSheet(normalButtonStyle);
     exportButton->setStyleSheet(normalButtonStyle);
     saveButton->setStyleSheet(normalButtonStyle);
@@ -371,6 +373,7 @@ void MainWindow::setupUi()
     middleButtonGroup->setSpacing(8);
     middleButtonGroup->addWidget(offlineOptimizeButton);
     middleButtonGroup->addWidget(aiOptimizeButton);
+    middleButtonGroup->addWidget(customPromptButton);
 
     auto *rightButtonGroup = new QHBoxLayout();
     rightButtonGroup->setSpacing(8);
@@ -420,13 +423,11 @@ void MainWindow::setupUi()
 
     connect(settingTabBtn, &QPushButton::clicked, this, [this]()
             {
-        emit openSettingsRequested();
-        QMessageBox::information(this, "设置", "后续将打开设置页面，用于配置 AI API 和场景词库。"); });
+        emit openSettingsRequested(); });
 
     connect(manageWordLibBtn, &QPushButton::clicked, this, [this]()
             {
-        emit openSettingsRequested();
-        QMessageBox::information(this, "词库管理", "后续将打开场景词库管理页面。"); });
+        emit openSettingsRequested(); });
 
     // 离线优化和 AI 优化使用相同的原文输入校验，但分别发出不同业务信号。
     connect(offlineOptimizeButton, &QPushButton::clicked, this, [this]()
@@ -532,7 +533,8 @@ void MainWindow::setupConnections()
     connect(aiOptimizeButton, &QPushButton::clicked, this, [this]()
             {
         if (!aiConfigured) {
-            QMessageBox::warning(this, "AI 未配置", "请先在设置中配置 AI API。");
+            QMessageBox::warning(this, "AI 未配置", "请先配置 DeepSeek API Key。");
+            emit openSettingsRequested();
             return;
         }
 
@@ -547,15 +549,29 @@ void MainWindow::setupConnections()
 
         emit aiOptimizeRequested(rawText); });
 
+    connect(customPromptButton, &QPushButton::clicked, this, [this]()
+            {
+        if (!aiConfigured) {
+            QMessageBox::warning(this, "AI 未配置", "请先配置 DeepSeek API Key。");
+            emit openSettingsRequested();
+            return;
+        }
+
+        QString rawText = rawTextEdit->toPlainText().trimmed();
+        if (rawText.isEmpty()) {
+            QMessageBox::warning(this, "无文本", "没有可优化的文本。");
+            return;
+        }
+
+        emit customPromptOptimizeRequested(rawText); });
+
     connect(settingsButton, &QPushButton::clicked, this, [this]()
             {
-        emit openSettingsRequested();
-        QMessageBox::information(this, "设置", "后续将打开设置页面。"); });
+        emit openSettingsRequested(); });
 
     connect(testAiButton, &QPushButton::clicked, this, [this]()
             {
-        emit testAiConnectionRequested();
-        QMessageBox::information(this, "测试连接", "后续将测试 AI API 是否可用。"); });
+        emit testAiConnectionRequested(); });
 }
 
 void MainWindow::appendRawText(const QString &text)
@@ -637,6 +653,18 @@ void MainWindow::setAiConfigured(bool configured, const QString &provider)
     }
 
     updateStatusBar();
+}
+
+void MainWindow::setAiOptimizeBusy(bool busy)
+{
+    if (aiOptimizeButton)
+    {
+        aiOptimizeButton->setEnabled(!busy);
+    }
+    if (customPromptButton)
+    {
+        customPromptButton->setEnabled(!busy);
+    }
 }
 
 void MainWindow::updateStatusBar()

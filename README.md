@@ -1,39 +1,67 @@
 # VoiceFlow AI
 
 VoiceFlow AI 是一个基于 Qt 的 Windows 桌面端实时语音转文本工具。  
-当前版本采用 **sherpa-onnx + Paraformer 中文 ONNX** 作为唯一 ASR 后端。
+当前版本采用 **sherpa-onnx + Paraformer 中文 ONNX** 作为 ASR 后端，并支持 **DeepSeek API 智能文本优化**。
 
 ## 当前主流程
 
 麦克风录音  
 → VAD 自动分句  
 → chunk WAV  
-→ `sherpa-onnx-offline.exe` + Paraformer 识别  
+→ sherpa-onnx-offline.exe + Paraformer 识别  
 → 文本清洗 / 简繁归一化 / 标点恢复  
 → TranscriptAssembler 聚合显示到左侧“原始识别文本”
 
-## 当前进度
+## DeepSeek AI 智能文本优化
 
-1. Qt 主界面（实时输入工作流）已完成。
-2. 麦克风录音与 WAV 保存已完成（完整录音保存到 `temp/recordings/`）。
-3. VAD 自动分句已完成（chunk 保存到 `temp/chunks/`）。
-4. sherpa-onnx / Paraformer 中文识别已完成。
-5. sherpa-onnx 离线标点恢复已接入，失败时回退规则标点。
-6. TranscriptAssembler 已接入，实时结果不再按 chunk 机械换行。
-7. ASR 支持小并发（默认 `maxConcurrentAsr = 2`），并按 `sequenceId` 有序输出，避免乱序。
+- 项目支持通过 DeepSeek API 对语音识别文本进行智能整理；
+- 用户可以在软件中点击“打开配置”填写自己的 DeepSeek API Key；
+- 配置保存到本地 `config/config.json`；
+- `config/config.json` 不提交到 Git；
+- 也可以通过环境变量 `DEEPSEEK_API_KEY` 配置（优先级更高）；
+- 点击“AI智能优化”后，程序读取左侧原始识别文本，调用 DeepSeek API，并将结果显示到右侧优化后文本；
+- 默认模型为 `deepseek-v4-flash`，可在配置窗口中修改。
 
-## 关键参数（默认）
+### 自定义提示词优化
 
-- `preRollMs = 500`
-- `speechStartMs = 120`
-- `speechEndSilenceMs = 1000`
-- `minSpeechMs = 400`
-- `maxSegmentMs = 15000`
-- `DISPLAY_PARAGRAPH_GAP_MS = 1600`（TranscriptAssembler 段落换行阈值）
+- 除默认“AI智能优化”外，用户可以点击“自定义提示词”按钮；
+- 用户可输入自己的文本处理要求；
+- 程序会将用户提示词和左侧原始识别文本一起发送给 DeepSeek API；
+- 结果显示在右侧“优化后文本”区域；
+- 示例提示词包括：整理成会议纪要、提取要点、改写成正式文稿、翻译成英文、改写得更口语化；
+- 用户的 API Key 由用户自己在配置窗口中填写；
+- 项目不会内置或提交任何真实 API Key。
+
+### 配置说明
+
+1. 在软件中点击“打开配置”；
+2. 填写 API Key；
+3. 点击“测试连接”；
+4. 连接成功后即可使用“AI智能优化”。
+
+或者手动复制：
+
+```powershell
+copy config\config.example.json config\config.json
+```
+
+然后填写：
+
+```json
+{
+  "deepseek": {
+    "api_key": "你的 DeepSeek API Key"
+  }
+}
+```
 
 ## 目录约定
 
 ```text
+config/
+  config.example.json
+  config.json                    # 本地生成，不提交
+
 third_party/
   sherpa-onnx-.../bin/sherpa-onnx-offline.exe
   sherpa-onnx-.../bin/sherpa-onnx-offline-punctuation.exe
@@ -56,6 +84,7 @@ temp/
 - MinGW 64-bit
 - Qt Widgets
 - Qt Multimedia
+- Qt Network
 - sherpa-onnx
 - Paraformer 中文 ONNX 模型
 - VAD 自动分句
@@ -65,10 +94,11 @@ temp/
 
 ## 第三方依赖说明
 
-1. sherpa-onnx 是第三方开源离线语音识别部署框架。  
-2. Paraformer 中文 ONNX 模型是第三方预训练模型。  
-3. `sherpa-onnx-offline.exe` 与 `sherpa-onnx-offline-punctuation.exe` 为第三方工具。  
-4. 本项目没有训练语音识别模型，也不声称模型原创。  
+1. sherpa-onnx 是第三方开源离线语音识别部署框架；
+2. Paraformer 中文 ONNX 模型是第三方预训练模型；
+3. `sherpa-onnx-offline.exe` 与 `sherpa-onnx-offline-punctuation.exe` 是第三方工具；
+4. DeepSeek API 是第三方在线模型服务；
+5. 本项目没有训练 sherpa/Paraformer/DeepSeek 模型，也不声称模型原创。
 
 ## 本项目原创实现
 
@@ -79,14 +109,12 @@ temp/
 - sherpa-onnx 调用封装
 - ASR 小并发与按序输出
 - 文本清洗、标点恢复与聚合显示
+- DeepSeek 配置管理、异步请求封装与结果展示
 
 ## 运行说明
 
-1. 确保 `third_party` 下存在 sherpa 可执行文件。  
-2. 确保 `models/sherpa-onnx/paraformer-zh/` 下存在 `model.int8.onnx` 和 `tokens.txt`。  
-3. 如果标点模型缺失，主识别仍可运行，但会回退到规则标点。  
-4. 如果 sherpa 工具或主模型缺失，程序会报错提示，不会崩溃。  
-
-## 历史说明
-
-项目早期尝试过其他离线 ASR 路线；当前主分支运行依赖已经统一到 sherpa-onnx / Paraformer。
+1. 确保 `third_party` 下存在 sherpa 可执行文件；
+2. 确保 `models/sherpa-onnx/paraformer-zh/` 下存在 `model.int8.onnx` 和 `tokens.txt`；
+3. 如标点模型缺失，主识别仍可运行，但会回退规则标点；
+4. `config/config.json` 缺失时会自动从 `config/config.example.json` 初始化；
+5. 若配置了 `DEEPSEEK_API_KEY` 环境变量，程序将优先使用该 Key。
