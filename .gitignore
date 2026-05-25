@@ -51,6 +51,7 @@ modelscope_cache/
 
 # Models
 models/sherpa-onnx/
+models/sherpa-onnx/streaming-zh/
 models/*.bin
 models/**/*.onnx
 models/*.gguf

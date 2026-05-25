@@ -38,6 +38,12 @@ signals:
     void audioLevelUpdated(float level);
     void vadStateChanged(const QString &stateText);
     void sentenceChunkReady(const AudioChunkInfo &info);
+    void streamingAudioFrameReady(const QByteArray &pcm16MonoData,
+                                  int sampleRate,
+                                  int channels,
+                                  int bitsPerSample,
+                                  qint64 frameStartMs);
+    void speechSegmentEnded(const QString &traceId, qint64 speechEndMs);
 
 private:
     // 选择可用的录音格式。优先 16kHz/单声道/Int16，失败时回退到设备支持格式。

@@ -460,6 +460,8 @@ void AudioRecorder::processPcm16Audio(const QByteArray &pcm16Data)
         const qint64 frameStartMs = sessionElapsedMs;
         const qint64 frameEndMs = sessionElapsedMs + vadConfig.frameMs;
 
+        emit streamingAudioFrameReady(frame, pcm16Format.sampleRate(), pcm16Format.channelCount(), 16, frameStartMs);
+
         const VadState state = vadDetector.processPcm16Frame(frame);
         qDebug() << "VAD frame:"
                  << "state=" << vadStateName(state)
@@ -561,6 +563,7 @@ void AudioRecorder::handleVadState(VadState state, const QByteArray &frame, qint
                               QString("silence_wait=%1 ms").arg(currentChunkSilenceWaitMs));
         PerfTracer::warnIfSlow("VAD", currentChunkTraceId, "vad_silence_wait", currentChunkSilenceWaitMs, 1500,
                                "VAD 等待静音过长，可能导致响应慢");
+        emit speechSegmentEnded(currentChunkTraceId, frameEndMs);
         audioChunker.appendAudio(frame);
         currentChunkLastAudioMs = frameEndMs;
         emitVadStatus("一句话已结束，正在保存片段");
