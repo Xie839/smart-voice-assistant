@@ -1,6 +1,7 @@
 #include "AudioRecorder.h"
 
 #include "WavWriter.h"
+#include "../utils/PerfTracer.h"
 
 #include <QAudioDevice>
 #include <QAudioSource>
@@ -118,6 +119,10 @@ bool AudioRecorder::startRecording(const QString &sessionId)
     sessionElapsedMs = 0;
     currentChunkStartMs = -1;
     currentChunkLastAudioMs = -1;
+    currentChunkLastSpeechMs = -1;
+    currentChunkTraceId.clear();
+    currentChunkSpeechEndDetectedMs = -1;
+    currentChunkSilenceWaitMs = -1;
     chunkCollecting = false;
     lastVadStatus.clear();
 
@@ -174,6 +179,13 @@ QString AudioRecorder::stopRecording()
         sessionElapsedMs = 0;
         currentChunkStartMs = -1;
         currentChunkLastAudioMs = -1;
+        currentChunkLastSpeechMs = -1;
+        currentChunkTraceId.clear();
+        currentChunkSpeechEndDetectedMs = -1;
+        currentChunkSilenceWaitMs = -1;
+        currentChunkTraceId.clear();
+        currentChunkSpeechEndDetectedMs = -1;
+        currentChunkSilenceWaitMs = -1;
         chunkCollecting = false;
     };
 
@@ -495,6 +507,12 @@ void AudioRecorder::handleVadState(VadState state, const QByteArray &frame, qint
     {
         qDebug() << "VAD SpeechStart triggered";
         chunkCollecting = true;
+        currentChunkTraceId = audioChunker.nextTraceId();
+        currentChunkSpeechEndDetectedMs = -1;
+        currentChunkSilenceWaitMs = -1;
+        PerfTracer::startTrace("VAD", currentChunkTraceId, "vad_speech_start",
+                               QString("frame_start=%1 ms").arg(frameStartMs));
+        PerfTracer::startTrace("ASR", currentChunkTraceId, "vad_speech_start");
 
         const qint64 preRollSamples = preRollBuffer.size() / int(sizeof(qint16));
         const qint64 preRollDurationMs = pcm16Format.sampleRate() > 0
@@ -508,6 +526,7 @@ void AudioRecorder::handleVadState(VadState state, const QByteArray &frame, qint
         }
         audioChunker.appendAudio(frame);
         currentChunkLastAudioMs = frameEndMs;
+        currentChunkLastSpeechMs = frameEndMs;
 
         emitVadStatus("检测到语音，正在录入");
         break;
@@ -521,6 +540,7 @@ void AudioRecorder::handleVadState(VadState state, const QByteArray &frame, qint
         }
         audioChunker.appendAudio(frame);
         currentChunkLastAudioMs = frameEndMs;
+        currentChunkLastSpeechMs = frameEndMs;
         emitVadStatus("检测到语音，正在录入");
         break;
 
@@ -538,6 +558,12 @@ void AudioRecorder::handleVadState(VadState state, const QByteArray &frame, qint
     case VadState::SpeechEnd:
     {
         qDebug() << "VAD SpeechEnd triggered";
+        currentChunkSpeechEndDetectedMs = frameEndMs;
+        currentChunkSilenceWaitMs = currentChunkLastSpeechMs >= 0 ? qMax<qint64>(0, frameEndMs - currentChunkLastSpeechMs) : 0;
+        PerfTracer::markTrace("VAD", currentChunkTraceId, "vad_speech_end_detected",
+                              QString("silence_wait=%1 ms").arg(currentChunkSilenceWaitMs));
+        PerfTracer::warnIfSlow("VAD", currentChunkTraceId, "vad_silence_wait", currentChunkSilenceWaitMs, 1500,
+                               "VAD 等待静音过长，可能导致响应慢");
         audioChunker.appendAudio(frame);
         currentChunkLastAudioMs = frameEndMs;
         emitVadStatus("一句话已结束，正在保存片段");
@@ -575,6 +601,8 @@ AudioChunkInfo AudioRecorder::saveCurrentChunk(const QString &splitReason, qint6
              << "endTimeMs=" << endTimeMs;
 
     AudioChunkInfo info = audioChunker.saveCurrentChunk(splitReason, startTimeMs, endTimeMs);
+    info.vadSpeechEndDetectedMs = currentChunkSpeechEndDetectedMs;
+    info.vadSilenceWaitMs = currentChunkSilenceWaitMs;
     if (info.wavPath.isEmpty())
     {
         if (info.durationMs > 0)

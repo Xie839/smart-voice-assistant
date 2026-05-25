@@ -11,10 +11,14 @@
 struct AudioChunkInfo
 {
     QString sessionId;
+    QString traceId;
     int chunkIndex = 0;
     qint64 sequenceId = -1;
     qint64 startTimeMs = -1;
     qint64 endTimeMs = -1;
+    qint64 vadSpeechEndDetectedMs = -1;
+    qint64 vadSilenceWaitMs = -1;
+    qint64 chunkWriteElapsedMs = -1;
     QString wavPath;
     int durationMs = 0;
     QString splitReason;
@@ -40,6 +44,8 @@ public:
     void clearCurrentChunk();
     bool hasValidAudio() const;
     int currentDurationMs() const;
+    qint64 nextSequenceIdValue() const;
+    QString nextTraceId() const;
 
 private:
     QString buildChunkFilePath() const;

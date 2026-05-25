@@ -23,6 +23,7 @@ public:
 
     void transcribeAsync(const AudioChunkInfo &chunkInfo, const TaskConfig &config);
     void transcribeAsync(const QString &wavPath, const TaskConfig &config);
+    void transcribeAsync(const QString &wavPath, const TaskConfig &config, const QString &traceId);
 
 signals:
     void transcribeStarted(const QString &wavPath);
@@ -32,11 +33,13 @@ signals:
 private:
     struct PendingTask
     {
+        QString traceId;
         QString wavPath;
         TaskConfig config;
         qint64 sequenceId = -1;
         qint64 startTimeMs = -1;
         qint64 endTimeMs = -1;
+        qint64 enqueueTimeMs = -1;
     };
 
     struct WorkerContext

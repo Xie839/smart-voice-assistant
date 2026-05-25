@@ -8,6 +8,7 @@
 // MainWindow 只把 text 追加到“原始识别文本”框，不显示模型路径或 chunk 路径。
 struct AsrResult
 {
+    QString traceId;
     QString wavPath;
     QString text;
     QString modelName;

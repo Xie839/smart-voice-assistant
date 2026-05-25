@@ -18,6 +18,7 @@
 #include "config/AppConfig.h"
 #include "history/HistoryManager.h"
 #include "media/FfmpegAudioConverter.h"
+#include "utils/PerfTracer.h"
 
 namespace
 {
@@ -78,6 +79,7 @@ int main(int argc, char *argv[])
     QString pendingSourceFilePath;
     QString activeFileSourcePath;
     QString activeFileTranscribeWavPath;
+    QString activeFileTraceId;
     QString latestSavedSourceFilePath;
     TaskConfig pendingFileTaskConfig;
 
@@ -177,6 +179,7 @@ int main(int argc, char *argv[])
                                &pendingSourceFilePath,
                                &activeFileSourcePath,
                                &activeFileTranscribeWavPath,
+                               &activeFileTraceId,
                                &pendingFileTaskConfig](const QString &filePath, const TaskConfig &config)
                      {
                          if (filePath.trimmed().isEmpty())
@@ -205,6 +208,13 @@ int main(int argc, char *argv[])
 
                          pendingSourceFilePath = filePath;
                          pendingFileTaskConfig = config;
+                         const QFileInfo selectedInfo(filePath);
+                         activeFileTraceId = "file-" + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz");
+                         PerfTracer::startTrace("FILE", activeFileTraceId, "file_selected",
+                                                QString("name=%1, suffix=%2, size=%3 MB")
+                                                    .arg(selectedInfo.fileName(), selectedInfo.suffix().toLower())
+                                                    .arg(selectedInfo.size() / 1024.0 / 1024.0, 0, 'f', 2));
+                         PerfTracer::markTrace("FILE", activeFileTraceId, "file_prepare_start");
                          window.setOptimizedText("");
                          window.setFileTranscriptionBusy(true);
 
@@ -215,7 +225,9 @@ int main(int argc, char *argv[])
                              activeFileTranscribeWavPath = filePath;
                              pendingSourceFilePath.clear();
                              window.setRunningStatus("正在转写本地文件...");
-                             asrManager.transcribeAsync(filePath, config);
+                             PerfTracer::markTrace("FILE", activeFileTraceId, "file_is_wav_skip_convert");
+                             PerfTracer::markTrace("FILE", activeFileTraceId, "file_asr_start");
+                             asrManager.transcribeAsync(filePath, config, activeFileTraceId);
                              return;
                          }
 
@@ -230,7 +242,7 @@ int main(int argc, char *argv[])
                          const QString convertedWavPath = buildConvertedWavPath(filePath);
                          filePreparationRunning = true;
                          window.setRunningStatus("正在提取音频并转换格式...");
-                         ffmpegConverter.convertToWavAsync(filePath, convertedWavPath);
+                         ffmpegConverter.convertToWavAsync(filePath, convertedWavPath, activeFileTraceId);
                      });
 
     QObject::connect(&ffmpegConverter, &FfmpegAudioConverter::conversionStarted,
@@ -247,6 +259,7 @@ int main(int argc, char *argv[])
                                &pendingSourceFilePath,
                                &activeFileSourcePath,
                                &activeFileTranscribeWavPath,
+                               &activeFileTraceId,
                                &pendingFileTaskConfig](const QString &outputWavPath)
                      {
                          filePreparationRunning = false;
@@ -264,7 +277,9 @@ int main(int argc, char *argv[])
                          activeFileTranscribeWavPath = outputWavPath;
                          fileTranscriptionRunning = true;
                          window.setRunningStatus("音频预处理完成，开始转写...");
-                         asrManager.transcribeAsync(outputWavPath, pendingFileTaskConfig);
+                         PerfTracer::markTrace("FILE", activeFileTraceId, "file_asr_start",
+                                               QString("output=%1").arg(QFileInfo(outputWavPath).fileName()));
+                         asrManager.transcribeAsync(outputWavPath, pendingFileTaskConfig, activeFileTraceId);
                      });
 
     QObject::connect(&ffmpegConverter, &FfmpegAudioConverter::conversionFailed,
@@ -273,13 +288,16 @@ int main(int argc, char *argv[])
                                &fileTranscriptionRunning,
                                &pendingSourceFilePath,
                                &activeFileSourcePath,
-                               &activeFileTranscribeWavPath](const QString &errorMessage)
+                               &activeFileTranscribeWavPath,
+                               &activeFileTraceId](const QString &errorMessage)
                      {
                          filePreparationRunning = false;
                          fileTranscriptionRunning = false;
                          pendingSourceFilePath.clear();
                          activeFileSourcePath.clear();
                          activeFileTranscribeWavPath.clear();
+                         PerfTracer::markTrace("FILE", activeFileTraceId, "ffmpeg_failed");
+                         activeFileTraceId.clear();
                          window.setFileTranscriptionBusy(false);
                          window.setRunningStatus("文件转换失败：" + errorMessage);
                      });
@@ -305,6 +323,10 @@ int main(int argc, char *argv[])
     QObject::connect(&recorder, &AudioRecorder::sentenceChunkReady,
                      &window, [&window, &asrManager](const AudioChunkInfo &info)
                      {
+                         PerfTracer::markTrace("ASR", info.traceId, "asr_task_created",
+                                               QString("duration=%1 ms, sequence=%2")
+                                                   .arg(info.durationMs)
+                                                   .arg(info.sequenceId));
                          const QString fileName = QFileInfo(info.wavPath).fileName();
                          window.setRunningStatus(
                              QString("已保存第 %1 个语音片段：%2（%3 ms，%4）")
@@ -336,6 +358,7 @@ int main(int argc, char *argv[])
                                &fileTranscriptionRunning,
                                &activeFileSourcePath,
                                &activeFileTranscribeWavPath,
+                               &activeFileTraceId,
                                &latestSavedSourceFilePath](const AsrResult &result)
                      {
                          if (!result.success)
@@ -346,6 +369,8 @@ int main(int argc, char *argv[])
                                  fileTranscriptionRunning = false;
                                  activeFileSourcePath.clear();
                                  activeFileTranscribeWavPath.clear();
+                                 PerfTracer::markTrace("FILE", activeFileTraceId, "file_asr_failed");
+                                 activeFileTraceId.clear();
                                  window.setFileTranscriptionBusy(false);
                              }
                              return;
@@ -361,6 +386,9 @@ int main(int argc, char *argv[])
                              fileTranscriptionRunning = false;
                              activeFileSourcePath.clear();
                              activeFileTranscribeWavPath.clear();
+                             PerfTracer::markTrace("FILE", activeFileTraceId, "ui_updated",
+                                                   QString("total_asr_elapsed=%1 ms").arg(result.elapsedMs));
+                             activeFileTraceId.clear();
                              window.setFileTranscriptionBusy(false);
                              window.setRunningStatus(QString("文件转写完成，耗时 %1 ms").arg(result.elapsedMs));
                              return;
@@ -374,7 +402,8 @@ int main(int argc, char *argv[])
                                &filePreparationRunning,
                                &fileTranscriptionRunning,
                                &activeFileSourcePath,
-                               &activeFileTranscribeWavPath](const QString &wavPath, const QString &errorMessage)
+                               &activeFileTranscribeWavPath,
+                               &activeFileTraceId](const QString &wavPath, const QString &errorMessage)
                      {
                          if (fileTranscriptionRunning && wavPath == activeFileTranscribeWavPath)
                          {
@@ -382,6 +411,8 @@ int main(int argc, char *argv[])
                              fileTranscriptionRunning = false;
                              activeFileSourcePath.clear();
                              activeFileTranscribeWavPath.clear();
+                             PerfTracer::markTrace("FILE", activeFileTraceId, "file_asr_error");
+                             activeFileTraceId.clear();
                              window.setFileTranscriptionBusy(false);
                              window.setRunningStatus("文件转写失败：" + errorMessage);
                              qDebug() << "[ASR] file transcribe error:" << errorMessage;

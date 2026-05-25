@@ -1,5 +1,7 @@
 #include "PunctuationProcessor.h"
 
+#include "../utils/PerfTracer.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QDirIterator>
@@ -171,7 +173,7 @@ bool PunctuationProcessor::isAvailable(QString *reason) const
     return true;
 }
 
-void PunctuationProcessor::punctuateAsync(const QString &text)
+void PunctuationProcessor::punctuateAsync(const QString &text, const QString &traceId)
 {
     const QString trimmed = text.trimmed();
     if (trimmed.isEmpty())
@@ -180,7 +182,7 @@ void PunctuationProcessor::punctuateAsync(const QString &text)
         return;
     }
 
-    pendingTexts.enqueue(trimmed);
+    pendingTexts.enqueue({trimmed, traceId});
     startNext();
 }
 
@@ -192,16 +194,24 @@ void PunctuationProcessor::startNext()
     }
 
     running = true;
-    activeText = pendingTexts.dequeue();
+    const PendingText pending = pendingTexts.dequeue();
+    activeText = pending.text;
+    activeTraceId = pending.traceId;
+    activeStartedAtMs = PerfTracer::nowMs();
     activeCompleted = false;
     activeTimedOut = false;
 
     QString reason;
     if (!isAvailable(&reason))
     {
+        PerfTracer::markTrace("TEXT", activeTraceId, "punctuation_start",
+                              QString("mode=fallback, text_len_before=%1").arg(activeText.size()));
         finishCurrent(fallbackRulePunctuation(activeText), reason);
         return;
     }
+
+    PerfTracer::markTrace("TEXT", activeTraceId, "punctuation_start",
+                          QString("mode=model, text_len_before=%1").arg(activeText.size()));
 
     const QString exePath = findPunctuationExe();
     const QString modelPath = findPunctuationModel();
@@ -444,6 +454,15 @@ QString PunctuationProcessor::fallbackRulePunctuation(const QString &text) const
 
 void PunctuationProcessor::finishCurrent(const QString &outputText, const QString &errorMessage)
 {
+    const bool fallback = !errorMessage.isEmpty();
+    const qint64 elapsedMs = activeStartedAtMs >= 0 ? PerfTracer::nowMs() - activeStartedAtMs : 0;
+    PerfTracer::markTrace("TEXT", activeTraceId, "punctuation_done",
+                          QString("mode=%1, elapsed=%2 ms, text_len_after=%3")
+                              .arg(fallback ? "fallback" : "model")
+                              .arg(elapsedMs)
+                              .arg(outputText.size()));
+    PerfTracer::warnIfSlow("TEXT", activeTraceId, "punctuation", elapsedMs, 1000,
+                           "标点恢复耗时较长");
     if (activeTimeoutTimer)
     {
         activeTimeoutTimer->stop();
@@ -465,5 +484,7 @@ void PunctuationProcessor::finishCurrent(const QString &outputText, const QStrin
 
     running = false;
     activeText.clear();
+    activeTraceId.clear();
+    activeStartedAtMs = -1;
     QTimer::singleShot(0, this, &PunctuationProcessor::startNext);
 }

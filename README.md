@@ -1,5 +1,24 @@
 # VoiceFlow AI
 
+## 性能诊断日志
+
+项目支持语音识别全链路耗时诊断，用于定位从 VAD 检测到语音结束、chunk WAV 写入、ASR 排队、sherpa-onnx 进程执行、JSON 解析、标点恢复、文本聚合到 UI 显示的耗时。
+
+Debug 模式默认打印性能日志；Release 模式可通过环境变量开启：
+
+```powershell
+$env:VOICEFLOW_PERF_LOG="1"
+.\VoiceFlowAI.exe
+```
+
+性能日志会同时输出到控制台和应用目录下的日志文件：
+
+```text
+logs/perf-YYYYMMDD.log
+```
+
+日志会记录 VAD 静音等待、chunk WAV 写入、ASR 入队和队列等待、sherpa-onnx 进程耗时、stdout/stderr 字节数、JSON 解析、标点恢复、UI 更新、本地文件转写和 ffmpeg 转换耗时。日志不会打印 API Key、Authorization header、完整识别文本、完整用户文本或完整自定义 prompt。
+
 VoiceFlow AI 是一个基于 Qt 的 Windows 桌面端实时语音转文本工具。  
 当前版本采用 **sherpa-onnx + Paraformer 中文 ONNX** 作为 ASR 后端，并支持 **DeepSeek API 智能文本优化**。
 

@@ -76,6 +76,10 @@ private:
     qint64 sessionElapsedMs = 0;
     qint64 currentChunkStartMs = -1;
     qint64 currentChunkLastAudioMs = -1;
+    qint64 currentChunkLastSpeechMs = -1;
+    QString currentChunkTraceId;
+    qint64 currentChunkSpeechEndDetectedMs = -1;
+    qint64 currentChunkSilenceWaitMs = -1;
     bool chunkCollecting = false;
 };
 
