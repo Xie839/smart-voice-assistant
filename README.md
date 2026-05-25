@@ -71,41 +71,6 @@ smart-voice-assistant/
 如果缺少 `tools/ffmpeg/bin/ffmpeg.exe`，本地文件转写功能可能只能稳定处理 WAV 文件，无法正常处理 mp3、mp4 等音视频格式。
 
 ---
-## 从源码复现运行环境
-
-本仓库主分支主要保存项目源码、README、配置模板和构建脚本。由于语音识别模型、sherpa-onnx 运行时、ffmpeg 工具和 Qt 运行依赖体积较大，且属于第三方模型或二进制文件，因此不直接提交到 Git 仓库中。
-
-如果需要从源码复现 Demo 中的运行效果，请先下载可运行 Demo 版本：
-解压后，将 Demo 包中的以下目录复制到本项目根目录：
-
-models/
-third_party/
-tools/
-复制后的项目目录应类似：
-smart-voice-assistant/
-  src/
-  CMakeLists.txt
-  README.md
-  config/
-    config.example.json
-
-  models/
-    sherpa-onnx/
-      paraformer-zh/
-      streaming-zh/
-      punctuation/
-
-  third_party/
-    sherpa-onnx-.../
-
-  tools/
-    ffmpeg/
-      bin/
-        ffmpeg.exe
-models/：存放 Paraformer 中文识别模型、streaming 实时识别模型和标点恢复模型；
-third_party/：存放 sherpa-onnx 可执行程序、C API DLL、ONNX Runtime DLL 等运行依赖；
-tools/：存放 ffmpeg 工具，用于本地音视频文件转写时的音频提取和格式转换。
----
 ## 项目背景与用户需求
 
 在日常学习、办公、会议记录、访谈整理和内容写作场景中，用户经常需要将语音内容快速转换成文本。如果完全依赖键盘输入或人工听写，不仅效率较低，而且容易遗漏关键信息。因此，用户需要一个能够完成语音转文字、文本整理和结果保存的桌面端工具。
