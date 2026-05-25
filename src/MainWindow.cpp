@@ -451,9 +451,15 @@ void MainWindow::setupConnections()
     connect(realtimeNavButton, &QPushButton::clicked, this, [this]()
             { setPageMode(PageMode::RealtimeInput); });
     connect(fileNavButton, &QPushButton::clicked, this, [this]()
-            { setPageMode(PageMode::FileTranscription); });
+            {
+                clearStreamingPreview();
+                setPageMode(PageMode::FileTranscription);
+            });
     connect(historyNavButton, &QPushButton::clicked, this, [this]()
-            { setPageMode(PageMode::History); });
+            {
+                clearStreamingPreview();
+                setPageMode(PageMode::History);
+            });
 
     connect(historyTable, &QTableWidget::cellClicked, this, [this](int row, int)
             { showHistoryRecordByRow(row); });
@@ -629,7 +635,13 @@ void MainWindow::setupConnections()
                     return;
                 }
 
-                const QString inputText = rawTextEdit->toPlainText().trimmed();
+                if (streamingPreviewActive)
+                {
+                    setRunningStatus("正在识别中，请停止后再优化");
+                    return;
+                }
+
+                const QString inputText = confirmedRawText();
                 if (inputText.isEmpty())
                 {
                     QMessageBox::warning(this, "无文本", "请先输入或识别文本。");
@@ -649,7 +661,13 @@ void MainWindow::setupConnections()
                     return;
                 }
 
-                const QString inputText = rawTextEdit->toPlainText().trimmed();
+                if (streamingPreviewActive)
+                {
+                    setRunningStatus("正在识别中，请停止后再优化");
+                    return;
+                }
+
+                const QString inputText = confirmedRawText();
                 if (inputText.isEmpty())
                 {
                     QMessageBox::warning(this, "无文本", "没有可优化的文本。");
@@ -849,6 +867,7 @@ void MainWindow::appendRawText(const QString &text)
 
 void MainWindow::setRawText(const QString &text)
 {
+    clearStreamingPreview();
     rawTextEdit->setPlainText(text);
     rawTextEdit->moveCursor(QTextCursor::End);
 }
@@ -861,6 +880,7 @@ void MainWindow::handleAsrResult(const AsrResult &result)
     {
         return;
     }
+    clearStreamingPreview();
 
     QElapsedTimer uiTimer;
     uiTimer.start();
@@ -889,10 +909,111 @@ void MainWindow::handleAsrResult(const AsrResult &result)
     }
 }
 
+void MainWindow::onStreamingPartialResult(const QString &text)
+{
+    const QString partial = text.trimmed();
+    if (partial.isEmpty())
+    {
+        return;
+    }
+    if (partial == streamingPartialText)
+    {
+        PerfTracer::markTrace("STREAM", "ui", "partial preview skipped same text",
+                              QString("text_len=%1").arg(partial.size()));
+        return;
+    }
+
+    streamingPartialText = partial;
+    streamingPreviewActive = true;
+    updateStreamingPreviewText(false);
+}
+
+void MainWindow::onStreamingFinalResult(const AsrResult &result)
+{
+    clearStreamingPreview();
+    handleAsrResult(result);
+    PerfTracer::markTrace("STREAM", result.traceId, "final result committed",
+                          QString("text_len=%1").arg(result.text.size()));
+}
+
+bool MainWindow::commitStreamingPartialAsFinal(const QString &traceId)
+{
+    const QString partial = streamingPartialText.trimmed();
+    if (partial.isEmpty())
+    {
+        clearStreamingPreview();
+        return false;
+    }
+
+    PerfTracer::markTrace("STREAM", traceId, "final empty, use partial as fallback final",
+                          QString("text_len=%1").arg(partial.size()));
+    AsrResult result;
+    result.traceId = traceId;
+    result.text = partial;
+    result.modelName = "sherpa-onnx online streaming";
+    result.success = true;
+    onStreamingFinalResult(result);
+    return true;
+}
+
+void MainWindow::clearStreamingPreview()
+{
+    if (!streamingPreviewActive && streamingPartialText.isEmpty() && lastStreamingPreviewDisplayText.isEmpty())
+    {
+        return;
+    }
+    streamingPartialText.clear();
+    streamingPreviewActive = false;
+    lastStreamingPreviewDisplayText.clear();
+    lastStreamingPreviewUiMs = -1;
+    PerfTracer::markTrace("STREAM", "ui", "clear partial preview");
+}
+
+void MainWindow::updateStreamingPreviewText(bool force)
+{
+    if (!rawTextEdit)
+    {
+        return;
+    }
+
+    const QString confirmed = transcriptAssembler.currentText();
+    const QString partial = streamingPartialText.trimmed();
+    QString displayText = confirmed;
+    if (!partial.isEmpty())
+    {
+        if (!displayText.isEmpty() && !displayText.endsWith('\n'))
+        {
+            displayText += '\n';
+        }
+        displayText += partial;
+        displayText += "▌";
+    }
+
+    const qint64 nowMs = PerfTracer::nowMs();
+    if (!force && lastStreamingPreviewUiMs >= 0 && nowMs - lastStreamingPreviewUiMs < 180)
+    {
+        return;
+    }
+    if (!force && displayText == lastStreamingPreviewDisplayText)
+    {
+        PerfTracer::markTrace("STREAM", "ui", "partial preview skipped same text",
+                              QString("text_len=%1").arg(partial.size()));
+        return;
+    }
+
+    rawTextEdit->setPlainText(displayText);
+    rawTextEdit->moveCursor(QTextCursor::End);
+    lastStreamingPreviewDisplayText = displayText;
+    lastStreamingPreviewUiMs = nowMs;
+    PerfTracer::markTrace("STREAM", "ui", "partial preview update",
+                          QString("text_len=%1").arg(partial.size()));
+}
+
 void MainWindow::resetTranscript()
 {
     transcriptAssembler.clear();
     lastResultEndTimeMs = -1;
+    clearStreamingPreview();
 }
 
 void MainWindow::setOptimizedText(const QString &text)
@@ -988,7 +1109,25 @@ void MainWindow::updateStatusBar()
 
 QString MainWindow::rawText() const
 {
+    if (streamingPreviewActive)
+    {
+        return confirmedRawText();
+    }
     return rawTextEdit ? rawTextEdit->toPlainText().trimmed() : QString();
+}
+
+QString MainWindow::confirmedRawText() const
+{
+    const QString confirmed = transcriptAssembler.currentText().trimmed();
+    if (!confirmed.isEmpty())
+    {
+        return confirmed;
+    }
+    if (!streamingPreviewActive && rawTextEdit)
+    {
+        return rawTextEdit->toPlainText().trimmed();
+    }
+    return QString();
 }
 
 QString MainWindow::optimizedText() const
@@ -1075,6 +1214,7 @@ bool MainWindow::isSupportedMediaFile(const QString &path) const
 
 void MainWindow::clearCurrentTexts()
 {
+    clearStreamingPreview();
     if (rawTextEdit)
     {
         rawTextEdit->clear();
