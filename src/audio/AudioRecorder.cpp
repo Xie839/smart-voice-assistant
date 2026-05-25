@@ -183,9 +183,6 @@ QString AudioRecorder::stopRecording()
         currentChunkTraceId.clear();
         currentChunkSpeechEndDetectedMs = -1;
         currentChunkSilenceWaitMs = -1;
-        currentChunkTraceId.clear();
-        currentChunkSpeechEndDetectedMs = -1;
-        currentChunkSilenceWaitMs = -1;
         chunkCollecting = false;
     };
 
@@ -599,6 +596,22 @@ AudioChunkInfo AudioRecorder::saveCurrentChunk(const QString &splitReason, qint6
              << "durationMs=" << audioChunker.currentDurationMs()
              << "startTimeMs=" << startTimeMs
              << "endTimeMs=" << endTimeMs;
+
+    const int chunkDurationMs = audioChunker.currentDurationMs();
+    const QString traceId = currentChunkTraceId.isEmpty() ? audioChunker.nextTraceId() : currentChunkTraceId;
+    if (chunkDurationMs < vadConfig.minSpeechMs)
+    {
+        PerfTracer::markTrace("CHUNK", traceId, "chunk_skipped_too_short",
+                              QString("skipped_too_short=true, chunk_duration_ms=%1, minSpeechMs=%2")
+                                  .arg(chunkDurationMs)
+                                  .arg(vadConfig.minSpeechMs));
+        audioChunker.clearCurrentChunk();
+        AudioChunkInfo skipped;
+        skipped.traceId = traceId;
+        skipped.durationMs = chunkDurationMs;
+        skipped.splitReason = "too_short";
+        return skipped;
+    }
 
     AudioChunkInfo info = audioChunker.saveCurrentChunk(splitReason, startTimeMs, endTimeMs);
     info.vadSpeechEndDetectedMs = currentChunkSpeechEndDetectedMs;
