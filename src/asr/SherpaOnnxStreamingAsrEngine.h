@@ -36,7 +36,9 @@ public:
                           qint64 frameStartMs);
     void finishSession();
     void resetSession();
+    void discardSession();
     bool isSessionActive() const;
+    bool isInitialized() const;
 
 signals:
     void partialResultReady(const QString &text);

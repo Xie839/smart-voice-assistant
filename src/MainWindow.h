@@ -38,6 +38,7 @@ public slots:
     void resetTranscript();
     void setOptimizedText(const QString &text);
     void setRunningStatus(const QString &status);
+    void setAsrBackendText(const QString &text);
     void setLastAsrTime(qint64 ms);
     void setAiConfigured(bool configured, const QString &provider = "");
     void setAiOptimizeBusy(bool busy);
@@ -145,6 +146,7 @@ private:
 
     PageMode currentPage = PageMode::RealtimeInput;
     QString currentStatus = "等待输入";
+    QString asrBackendText = "sherpa-onnx / Paraformer 本地离线识别";
     QString selectedFilePath;
     qint64 lastAsrTimeMs = -1;
     qint64 lastResultEndTimeMs = -1;

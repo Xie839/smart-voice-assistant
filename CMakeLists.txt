@@ -12,7 +12,7 @@ endif()
 get_filename_component(DEFAULT_MINGW_BIN_DIR "${CMAKE_CXX_COMPILER}" DIRECTORY)
 set(MINGW_BIN_DIR "${DEFAULT_MINGW_BIN_DIR}" CACHE PATH "MinGW runtime DLL directory")
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia Network)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia Network Concurrent)
 
 qt_standard_project_setup()
 
@@ -94,7 +94,7 @@ add_executable(VoiceFlowAI
     src/ai/CustomPromptDialog.cpp
 )
 
-target_link_libraries(VoiceFlowAI PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network)
+target_link_libraries(VoiceFlowAI PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network Qt6::Concurrent)
 
 if(VOICEFLOW_SHERPA_STREAMING_COMPILED)
     target_compile_definitions(VoiceFlowAI PRIVATE VOICEFLOW_SHERPA_STREAMING_COMPILED=1)

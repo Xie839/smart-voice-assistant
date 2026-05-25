@@ -3,12 +3,16 @@
 #include <QDebug>
 #include <QDialog>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include <QMessageBox>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QFutureWatcher>
 #include <QStringList>
+#include <QTimer>
 #include <QUuid>
+#include <QtConcurrent>
 
 #include <exception>
 
@@ -64,13 +68,100 @@ QString buildConvertedWavPath(const QString &inputFilePath)
     return tempDir.filePath(fileName);
 }
 
-bool isStreamingAsrEnabledByEnv()
+enum class StreamingMode
 {
-    const QString value = QProcessEnvironment::systemEnvironment()
-                              .value("VOICEFLOW_ENABLE_STREAMING_ASR")
-                              .trimmed()
-                              .toLower();
-    return value == "1" || value == "true" || value == "yes" || value == "on";
+    Auto,
+    ForceOn,
+    ForceOff
+};
+
+enum class StreamingState
+{
+    Disabled,
+    Uninitialized,
+    Initializing,
+    Ready,
+    Streaming,
+    Stopping,
+    Error
+};
+
+struct StreamingInitResult
+{
+    bool success = false;
+    bool smokePassed = false;
+    qint64 elapsedMs = 0;
+    QString reason;
+    QString source;
+};
+
+QString streamingModeName(StreamingMode mode)
+{
+    switch (mode)
+    {
+    case StreamingMode::Auto:
+        return "auto";
+    case StreamingMode::ForceOn:
+        return "force_on";
+    case StreamingMode::ForceOff:
+        return "force_off";
+    }
+    return "auto";
+}
+
+QString streamingStateName(StreamingState state)
+{
+    switch (state)
+    {
+    case StreamingState::Disabled:
+        return "Disabled";
+    case StreamingState::Uninitialized:
+        return "Uninitialized";
+    case StreamingState::Initializing:
+        return "Initializing";
+    case StreamingState::Ready:
+        return "Ready";
+    case StreamingState::Streaming:
+        return "Streaming";
+    case StreamingState::Stopping:
+        return "Stopping";
+    case StreamingState::Error:
+        return "Error";
+    }
+    return "Unknown";
+}
+
+StreamingMode resolveStreamingMode(QString *rawEnv)
+{
+    const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    if (!env.contains("VOICEFLOW_ENABLE_STREAMING_ASR"))
+    {
+        if (rawEnv)
+        {
+            *rawEnv = "<unset>";
+        }
+        return StreamingMode::Auto;
+    }
+
+    const QString raw = env.value("VOICEFLOW_ENABLE_STREAMING_ASR").trimmed();
+    if (rawEnv)
+    {
+        *rawEnv = raw.isEmpty() ? "<empty>" : raw;
+    }
+
+    const QString value = raw.toLower();
+    if (value == "1" || value == "true" || value == "yes" || value == "on")
+    {
+        return StreamingMode::ForceOn;
+    }
+    if (value == "0" || value == "false" || value == "no" || value == "off")
+    {
+        return StreamingMode::ForceOff;
+    }
+
+    qWarning() << "[STREAM] unknown VOICEFLOW_ENABLE_STREAMING_ASR value:" << raw
+               << "use auto mode";
+    return StreamingMode::Auto;
 }
 
 bool isStreamingSmokeProbeMode(const QStringList &arguments)
@@ -205,6 +296,15 @@ int main(int argc, char *argv[])
     TaskConfig pendingFileTaskConfig;
     bool streamingRealtimeActive = false;
     bool streamingLastSegmentHadFinal = false;
+    bool streamingSmokeTestDone = false;
+    bool streamingStartPending = false;
+    bool streamingStartCancelled = false;
+    bool streamingFirstAudioFrameLogged = false;
+    bool streamingFirstPartialLogged = false;
+    int streamingSessionCounter = 0;
+    qint64 streamingStartClickedAtMs = -1;
+    StreamingState streamingState = StreamingState::Uninitialized;
+    QFutureWatcher<StreamingInitResult> streamingInitWatcher;
 
     enum class AiAction
     {
@@ -279,144 +379,322 @@ int main(int argc, char *argv[])
 
     applyAiConfigToClient();
 
-    QObject::connect(&window, &MainWindow::startVoiceInputRequested,
-                     &recorder, [&window,
-                                 &recorder,
-                                 &streamingAsr,
-                                 &streamingRealtimeActive,
-                                 &streamingLastSegmentHadFinal,
-                                 &latestSavedSourceFilePath](const TaskConfig &config)
-                     {
-                         Q_UNUSED(config);
-                         latestSavedSourceFilePath.clear();
-                         QString streamingReason;
-                         const bool streamingEnabled = isStreamingAsrEnabledByEnv();
-                         qWarning() << "[STREAM] enable_streaming=" << streamingEnabled;
-                         PerfTracer::markTrace("STREAM", "realtime", "streaming_enable_check",
-                                               QString("enable_streaming=%1").arg(streamingEnabled ? "true" : "false"));
+    auto startElapsedMs = [&]() -> qint64
+    {
+        return streamingStartClickedAtMs >= 0 ? PerfTracer::nowMs() - streamingStartClickedAtMs : 0;
+    };
 
-                         streamingRealtimeActive = false;
-                         streamingLastSegmentHadFinal = false;
-                         if (streamingEnabled)
+    auto logStartWarning = [](const QString &message, qint64 elapsedMs)
+    {
+        qWarning() << "[STREAM][START][WARN]" << message << "elapsed=" << elapsedMs << "ms";
+    };
+
+    auto startAudioRecorder = [&](const QString &sessionId, bool streamingEnabled, const QString &fallbackReason) -> bool
+    {
+        const qint64 elapsed = startElapsedMs();
+        qWarning() << "[STREAM][START] audio recorder start elapsed=" << elapsed << "ms";
+        if (streamingStartClickedAtMs >= 0 && elapsed > 300)
+        {
+            logStartWarning("start button clicked to audio recorder start exceeded 300ms", elapsed);
+        }
+
+        streamingRealtimeActive = streamingEnabled;
+        const bool started = recorder.startRecording(sessionId);
+        if (!started)
+        {
+            if (streamingEnabled)
+            {
+                streamingAsr.discardSession();
+            }
+            streamingRealtimeActive = false;
+            streamingLastSegmentHadFinal = false;
+            streamingState = streamingEnabled ? StreamingState::Ready : streamingState;
+            return false;
+        }
+
+        if (streamingEnabled)
+        {
+            streamingState = StreamingState::Streaming;
+            window.setAsrBackendText("sherpa-onnx streaming 实时识别");
+            window.setRunningStatus("Streaming 实时识别已启动。");
+            qWarning() << "[STREAM] streaming init success";
+            qWarning() << "[STREAM] fallback offline=false";
+            PerfTracer::markTrace("STREAM", "realtime", "streaming_runtime_enabled",
+                                  "backend=streaming, fallback_offline=false");
+        }
+        else
+        {
+            window.setAsrBackendText("sherpa-onnx / Paraformer 本地离线识别");
+            window.setRunningStatus(fallbackReason.trimmed().isEmpty()
+                                        ? "Streaming 不可用，已回退离线识别。"
+                                        : "Streaming 不可用，已回退离线识别。");
+            qWarning() << "[STREAM] fallback offline=true reason=" << fallbackReason;
+            PerfTracer::markTrace("ASR", "realtime", "fallback_backend",
+                                  QString("backend=offline-exe, reason=%1").arg(fallbackReason));
+        }
+        return true;
+    };
+
+    auto startOfflineRealtime = [&](const QString &reason)
+    {
+        streamingStartPending = false;
+        streamingStartCancelled = false;
+        streamingRealtimeActive = false;
+        streamingLastSegmentHadFinal = false;
+        ++streamingSessionCounter;
+        startAudioRecorder(QString("recording_%1").arg(streamingSessionCounter), false, reason);
+    };
+
+    auto startStreamingSession = [&]() -> bool
+    {
+        if (!streamingAsr.isInitialized())
+        {
+            startOfflineRealtime("streaming recognizer 尚未初始化");
+            return false;
+        }
+
+        window.clearStreamingPreview();
+        streamingLastSegmentHadFinal = false;
+        streamingFirstAudioFrameLogged = false;
+        streamingFirstPartialLogged = false;
+        ++streamingSessionCounter;
+
+        QElapsedTimer streamTimer;
+        streamTimer.start();
+        qWarning() << "[STREAM][START] create stream start";
+        streamingAsr.startSession();
+        const qint64 streamMs = streamTimer.elapsed();
+        qWarning() << "[STREAM][START] create stream done elapsed=" << streamMs << "ms";
+
+        streamingRealtimeActive = streamingAsr.isSessionActive();
+        if (!streamingRealtimeActive)
+        {
+            streamingState = StreamingState::Error;
+            startOfflineRealtime("streaming session 未能启动");
+            return false;
+        }
+
+        streamingStartPending = false;
+        streamingStartCancelled = false;
+        const bool started = startAudioRecorder(QString("recording_%1").arg(streamingSessionCounter), true, QString());
+        qWarning() << "[STREAM][LIFE] state after start=" << streamingStateName(streamingState)
+                   << "elapsed=" << startElapsedMs() << "ms";
+        return started;
+    };
+
+    auto startStreamingInitAsync = [&](const QString &source)
+    {
+        if (streamingInitWatcher.isRunning())
+        {
+            streamingState = StreamingState::Initializing;
+            qWarning() << "[STREAM][START] init recognizer already running source=" << source;
+            return;
+        }
+        if (streamingAsr.isInitialized())
+        {
+            streamingState = StreamingState::Ready;
+            return;
+        }
+
+        streamingState = StreamingState::Initializing;
+        const bool smokeAlreadyDone = streamingSmokeTestDone;
+        qWarning() << (source == "start" ? "[STREAM][START]" : "[STREAM][PRELOAD]")
+                   << "init recognizer start";
+
+        streamingInitWatcher.setFuture(QtConcurrent::run([&streamingAsr, smokeAlreadyDone, source]() -> StreamingInitResult
+        {
+            StreamingInitResult result;
+            result.source = source;
+            QElapsedTimer initTimer;
+            initTimer.start();
+            QString reason;
+            try
+            {
+                if (!streamingAsr.isAvailable(&reason))
+                {
+                    result.reason = reason;
+                    result.elapsedMs = initTimer.elapsed();
+                    return result;
+                }
+                if (!streamingAsr.initialize(&reason))
+                {
+                    result.reason = reason;
+                    result.elapsedMs = initTimer.elapsed();
+                    return result;
+                }
+                if (!smokeAlreadyDone && !streamingAsr.runSmokeTest(&reason))
+                {
+                    result.reason = reason;
+                    result.elapsedMs = initTimer.elapsed();
+                    return result;
+                }
+
+                result.success = true;
+                result.smokePassed = true;
+                result.reason = "streaming recognizer ready";
+            }
+            catch (const std::exception &ex)
+            {
+                result.reason = QString("streaming 初始化异常：%1").arg(ex.what());
+            }
+            catch (...)
+            {
+                result.reason = "streaming 初始化出现未知异常";
+            }
+            result.elapsedMs = initTimer.elapsed();
+            return result;
+        }));
+    };
+
+    QObject::connect(&streamingInitWatcher, &QFutureWatcher<StreamingInitResult>::finished,
+                     &window, [&]()
+                     {
+                         const StreamingInitResult result = streamingInitWatcher.result();
+                         const bool startWasWaiting = streamingStartPending && !streamingStartCancelled;
+                         qWarning() << (startWasWaiting ? "[STREAM][START]" : "[STREAM][PRELOAD]")
+                                    << "init recognizer done elapsed=" << result.elapsedMs << "ms"
+                                    << "success=" << result.success
+                                    << "reason=" << result.reason;
+                         if (result.elapsedMs > 500)
                          {
-                             try
-                             {
-                                 if (!runStreamingSmokeProbeOutOfProcess(&streamingReason))
-                                 {
-                                     qWarning() << "[STREAM] smoke probe failed:" << streamingReason;
-                                     PerfTracer::markTrace("STREAM", "realtime", "streaming_smoke_probe_failed", streamingReason);
-                                 }
-                                 else if (!streamingAsr.isAvailable(&streamingReason))
-                                 {
-                                     qWarning() << "[STREAM] backend unavailable before init:" << streamingReason;
-                                     PerfTracer::markTrace("STREAM", "realtime", "streaming_backend_unavailable", streamingReason);
-                                 }
-                                 else
-                                 {
-                                     qWarning() << "[STREAM] backend init start";
-                                     if (!streamingAsr.initialize(&streamingReason))
-                                     {
-                                         qWarning() << "[STREAM] backend init fail:" << streamingReason;
-                                         PerfTracer::markTrace("STREAM", "realtime", "streaming_backend_init_fail", streamingReason);
-                                     }
-                                     else
-                                     {
-                                         qWarning() << "[STREAM] backend init success";
-                                         PerfTracer::markTrace("STREAM", "realtime", "streaming_backend_init_success");
-                                         qWarning() << "[STREAM] smoke test start";
-                                         if (!streamingAsr.runSmokeTest(&streamingReason))
-                                         {
-                                             qWarning() << "[STREAM] smoke test fail:" << streamingReason;
-                                             PerfTracer::markTrace("STREAM", "realtime", "streaming_smoke_test_fail", streamingReason);
-                                             streamingRealtimeActive = false;
-                                         }
-                                         else
-                                         {
-                                             qWarning() << "[STREAM] smoke test passed";
-                                             streamingAsr.startSession();
-                                             streamingRealtimeActive = streamingAsr.isSessionActive();
-                                             qWarning() << "[STREAM] realtime active=" << streamingRealtimeActive;
-                                             PerfTracer::markTrace("STREAM", "realtime", "streaming_realtime_active",
-                                                                   QString("active=%1").arg(streamingRealtimeActive ? "true" : "false"));
-                                             if (!streamingRealtimeActive)
-                                             {
-                                                 streamingReason = "streaming session 未能启动";
-                                                 qWarning() << "[STREAM] session start fail:" << streamingReason;
-                                             }
-                                             else
-                                             {
-                                                 streamingReason = "streaming 后端已启用";
-                                             }
-                                         }
-                                     }
-                                 }
-                             }
-                             catch (const std::exception &ex)
-                             {
-                                 streamingReason = QString("streaming 初始化异常：%1").arg(ex.what());
-                                 qWarning() << "[STREAM] exception:" << streamingReason;
-                                 streamingRealtimeActive = false;
-                             }
-                             catch (...)
-                             {
-                                 streamingReason = "streaming 初始化出现未知异常";
-                                 qWarning() << "[STREAM] unknown exception";
-                                 streamingRealtimeActive = false;
-                             }
+                             logStartWarning("recognizer initialization exceeded 500ms", result.elapsedMs);
                          }
-                         else
+
+                         if (result.success)
                          {
-                             streamingReason = "VOICEFLOW_ENABLE_STREAMING_ASR 未开启，默认使用离线识别";
-                         }
-                         const bool started = recorder.startRecording("recording");
-                         if (!started)
-                         {
-                             if (streamingRealtimeActive)
+                             streamingSmokeTestDone = streamingSmokeTestDone || result.smokePassed;
+                             streamingState = StreamingState::Ready;
+                             if (startWasWaiting)
                              {
-                                 streamingAsr.resetSession();
+                                 startStreamingSession();
                              }
-                             streamingRealtimeActive = false;
-                             streamingLastSegmentHadFinal = false;
                              return;
                          }
-                         if (streamingRealtimeActive)
+
+                         streamingState = StreamingState::Error;
+                         PerfTracer::markTrace("STREAM", "realtime", "streaming_backend_init_fail", result.reason);
+                         if (startWasWaiting)
                          {
-                             window.setRunningStatus("streaming 后端已启用，正在实时识别");
-                             qWarning() << "[STREAM] fallback offline=false";
-                             PerfTracer::markTrace("STREAM", "realtime", "streaming_runtime_enabled",
-                                                   "backend=streaming, fallback_offline=false");
+                             window.setRunningStatus("Streaming 不可用，已回退离线识别。");
+                             startOfflineRealtime(result.reason);
                          }
-                         else
+                     });
+
+    QObject::connect(&window, &MainWindow::startVoiceInputRequested,
+                     &recorder, [&](const TaskConfig &config)
+                     {
                          {
-                             const QString statusText = streamingEnabled
-                                                            ? streamingReason + "；当前仍使用离线识别"
-                                                            : "Streaming 后端未启用，已使用离线分段识别";
-                             window.setRunningStatus(statusText);
-                             qWarning() << "[STREAM] fallback offline=true reason=" << streamingReason;
-                             PerfTracer::markTrace("ASR", "realtime", "fallback_backend",
-                                                   QString("backend=offline-exe, reason=%1").arg(streamingReason));
+                             Q_UNUSED(config);
+                             latestSavedSourceFilePath.clear();
+                             streamingStartClickedAtMs = PerfTracer::nowMs();
+                             streamingFirstAudioFrameLogged = false;
+                             streamingFirstPartialLogged = false;
+                             streamingStartCancelled = false;
+                             window.setRunningStatus("正在启动实时语音输入...");
+
+                             QElapsedTimer startTimer;
+                             startTimer.start();
+                             qWarning() << "[STREAM][START] start button clicked";
+                             qWarning() << "[STREAM][LIFE] state before start=" << streamingStateName(streamingState);
+
+                             QString streamingEnvText;
+                             const StreamingMode streamingMode = resolveStreamingMode(&streamingEnvText);
+                             const bool tryStreaming = streamingMode != StreamingMode::ForceOff;
+                             const bool recognizerReady = streamingState != StreamingState::Initializing &&
+                                                          streamingAsr.isInitialized();
+                             qWarning() << "[STREAM][START] resolve mode done elapsed=" << startTimer.elapsed() << "ms"
+                                        << "env=" << streamingEnvText
+                                        << "mode=" << streamingModeName(streamingMode)
+                                        << "try_streaming=" << tryStreaming;
+                             qWarning() << "[STREAM][START] recognizer ready=" << (recognizerReady ? "true" : "false");
+                             PerfTracer::markTrace("STREAM", "realtime", "streaming_mode_resolved",
+                                                   QString("env=%1, mode=%2, try_streaming=%3")
+                                                       .arg(streamingEnvText,
+                                                            streamingModeName(streamingMode),
+                                                            tryStreaming ? "true" : "false"));
+
+                             streamingRealtimeActive = false;
+                             streamingLastSegmentHadFinal = false;
+
+                             if (streamingState == StreamingState::Streaming)
+                             {
+                                 window.setRunningStatus("正在识别中");
+                                 qWarning() << "[STREAM][LIFE] start ignored state=" << streamingStateName(streamingState);
+                                 return;
+                             }
+
+                             if (!tryStreaming)
+                             {
+                                 streamingState = StreamingState::Disabled;
+                                 startOfflineRealtime("Streaming 已关闭，使用离线识别");
+                                 return;
+                             }
+
+                             if (recognizerReady)
+                             {
+                                 streamingState = StreamingState::Ready;
+                                 startStreamingSession();
+                                 return;
+                             }
+
+                             if (streamingState == StreamingState::Initializing || streamingInitWatcher.isRunning())
+                             {
+                                 streamingState = StreamingState::Initializing;
+                                 streamingStartPending = true;
+                                 window.setRunningStatus("Streaming 正在初始化...");
+                                 qWarning() << "[STREAM][START] init recognizer already running";
+                                 return;
+                             }
+
+                             if (streamingState == StreamingState::Error)
+                             {
+                                 startOfflineRealtime("Streaming 初始化失败，使用离线识别");
+                                 return;
+                             }
+
+                             streamingStartPending = true;
+                             window.setRunningStatus("Streaming 正在初始化...");
+                             startStreamingInitAsync("start");
                          }
                      });
 
     QObject::connect(&window, &MainWindow::stopVoiceInputRequested,
-                     &recorder, [&window,
-                                 &recorder,
-                                 &streamingAsr,
-                                 &streamingRealtimeActive,
-                                 &streamingLastSegmentHadFinal]()
+                     &recorder, [&]()
                      {
+                         QElapsedTimer stopTimer;
+                         stopTimer.start();
+                         qWarning() << "[STREAM][LIFE] stop clicked";
+                         qWarning() << "[STREAM][LIFE] state before stop=" << streamingStateName(streamingState);
                          const bool wasStreamingActive = streamingRealtimeActive;
+                         const bool wasInitializing = streamingState == StreamingState::Initializing;
+                         streamingStartPending = false;
+                         streamingStartCancelled = true;
+                         streamingRealtimeActive = false;
+                         streamingState = wasStreamingActive ? StreamingState::Stopping : streamingState;
+                         QElapsedTimer recorderTimer;
+                         recorderTimer.start();
                          recorder.stopRecording();
+                         qWarning() << "[STREAM][LIFE] stop recorder elapsed=" << recorderTimer.elapsed() << "ms";
                          if (wasStreamingActive)
                          {
-                             streamingAsr.finishSession();
                              if (!streamingLastSegmentHadFinal)
                              {
                                  streamingLastSegmentHadFinal = window.commitStreamingPartialAsFinal("streaming-stop-partial");
                              }
-                             streamingAsr.resetSession();
-                             streamingRealtimeActive = false;
+                             qWarning() << "[STREAM][LIFE] finish stream async skipped, discard current stream";
+                             streamingAsr.discardSession();
+                             streamingState = StreamingState::Ready;
                              streamingLastSegmentHadFinal = false;
+                         }
+                         else if (!recorder.isRecording() && wasInitializing)
+                         {
+                             window.setRunningStatus("Streaming 初始化已在后台继续，已取消本次启动。");
+                         }
+                         qWarning() << "[STREAM][LIFE] state after stop=" << streamingStateName(streamingState)
+                                    << "elapsed=" << stopTimer.elapsed() << "ms";
+                         if (stopTimer.elapsed() > 300)
+                         {
+                             qWarning() << "[STREAM][WARN] stop took" << stopTimer.elapsed() << "ms";
                          }
                      });
 
@@ -555,7 +833,7 @@ int main(int argc, char *argv[])
     QObject::connect(&recorder, &AudioRecorder::recordingStarted,
                      &window, [&window]()
                      {
-                         window.setRunningStatus("正在录音，请开始说话");
+                         window.setRunningStatus("正在监听，请开始说话...");
                      });
 
     QObject::connect(&recorder, &AudioRecorder::recordingStopped,
@@ -571,15 +849,25 @@ int main(int argc, char *argv[])
                      });
 
     QObject::connect(&recorder, &AudioRecorder::streamingAudioFrameReady,
-                     &streamingAsr, [&streamingAsr, &streamingRealtimeActive](const QByteArray &pcm16MonoData,
-                                                                               int sampleRate,
-                                                                               int channels,
-                                                                               int bitsPerSample,
-                                                                               qint64 frameStartMs)
+                     &streamingAsr, [&](const QByteArray &pcm16MonoData,
+                                         int sampleRate,
+                                         int channels,
+                                         int bitsPerSample,
+                                         qint64 frameStartMs)
                      {
                          if (!streamingRealtimeActive)
                          {
                              return;
+                         }
+                         if (!streamingFirstAudioFrameLogged)
+                         {
+                             streamingFirstAudioFrameLogged = true;
+                             const qint64 elapsed = startElapsedMs();
+                             qWarning() << "[STREAM][START] first audio frame received elapsed=" << elapsed << "ms";
+                             if (streamingStartClickedAtMs >= 0 && elapsed > 1000)
+                             {
+                                 logStartWarning("first audio frame exceeded 1000ms", elapsed);
+                             }
                          }
                          streamingAsr.acceptAudioFrame(pcm16MonoData, sampleRate, channels, bitsPerSample, frameStartMs);
                      });
@@ -607,15 +895,35 @@ int main(int argc, char *argv[])
                      });
 
     QObject::connect(&streamingAsr, &SherpaOnnxStreamingAsrEngine::partialResultReady,
-                     &window, [&window](const QString &text)
+                     &window, [&](const QString &text)
                      {
+                         if (!streamingRealtimeActive)
+                         {
+                             qWarning() << "[STREAM][LIFE] ignore stale partial";
+                             return;
+                         }
+                         if (!streamingFirstPartialLogged)
+                         {
+                             streamingFirstPartialLogged = true;
+                             const qint64 elapsed = startElapsedMs();
+                             qWarning() << "[STREAM][START] first partial result elapsed=" << elapsed << "ms";
+                             if (streamingStartClickedAtMs >= 0 && elapsed > 1500)
+                             {
+                                 logStartWarning("first partial result exceeded 1500ms", elapsed);
+                             }
+                         }
                          window.onStreamingPartialResult(text);
-                         window.setRunningStatus("正在识别");
+                         window.setRunningStatus("正在识别：" + text.left(32));
                      });
 
     QObject::connect(&streamingAsr, &SherpaOnnxStreamingAsrEngine::finalResultReady,
-                     &window, [&window, &streamingLastSegmentHadFinal](const AsrResult &result)
+                     &window, [&window, &streamingRealtimeActive, &streamingLastSegmentHadFinal](const AsrResult &result)
                      {
+                         if (!streamingRealtimeActive)
+                         {
+                             qWarning() << "[STREAM][LIFE] ignore stale final";
+                             return;
+                         }
                          if (!result.success)
                          {
                              return;
@@ -628,11 +936,13 @@ int main(int argc, char *argv[])
     QObject::connect(&streamingAsr, &SherpaOnnxStreamingAsrEngine::streamingError,
                      &window, [&window,
                                &streamingRealtimeActive,
-                               &streamingLastSegmentHadFinal](const QString &errorMessage)
+                               &streamingLastSegmentHadFinal,
+                               &streamingState](const QString &errorMessage)
                      {
-                         qDebug() << "[STREAM] unavailable:" << errorMessage;
-                         streamingRealtimeActive = false;
-                         streamingLastSegmentHadFinal = false;
+                          qDebug() << "[STREAM] unavailable:" << errorMessage;
+                          streamingRealtimeActive = false;
+                          streamingLastSegmentHadFinal = false;
+                          streamingState = StreamingState::Error;
                          window.setRunningStatus("streaming 后端不可用，已使用离线分段识别");
                      });
 
@@ -816,6 +1126,31 @@ int main(int argc, char *argv[])
 
     QObject::connect(&window, &MainWindow::openSettingsRequested, &window, [&]()
                      { openAiConfigDialog(); });
+
+    QTimer::singleShot(500, &window, [&]()
+                       {
+                           QString streamingEnvText;
+                           const StreamingMode streamingMode = resolveStreamingMode(&streamingEnvText);
+                           if (streamingMode == StreamingMode::ForceOff)
+                           {
+                               streamingState = StreamingState::Disabled;
+                               qWarning() << "[STREAM][PRELOAD] skipped because streaming is disabled";
+                               return;
+                           }
+                           if (streamingState == StreamingState::Initializing || streamingInitWatcher.isRunning())
+                           {
+                               qWarning() << "[STREAM][PRELOAD] skipped because init is already running";
+                               return;
+                           }
+                           if (streamingAsr.isInitialized())
+                           {
+                               streamingState = StreamingState::Ready;
+                               qWarning() << "[STREAM][PRELOAD] recognizer already ready";
+                               return;
+                           }
+                           qWarning() << "[STREAM][PRELOAD] schedule async preload";
+                           startStreamingInitAsync("preload");
+                       });
 
     QObject::connect(&window, &MainWindow::testAiConnectionRequested, &window, [&]()
                      {
