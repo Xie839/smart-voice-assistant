@@ -444,14 +444,12 @@ bool SherpaOnnxStreamingAsrEngine::runSmokeTest(QString *errorMessage)
 
 void SherpaOnnxStreamingAsrEngine::startSession()
 {
+    QElapsedTimer timer;
+    timer.start();
     if (!m_initialized)
     {
-        QString reason;
-        if (!initialize(&reason))
-        {
-            emit streamingError(reason);
-            return;
-        }
+        emit streamingError("streaming recognizer is not initialized; fallback offline");
+        return;
     }
 
 #ifdef VOICEFLOW_SHERPA_STREAMING_HEADERS
@@ -465,6 +463,7 @@ void SherpaOnnxStreamingAsrEngine::startSession()
         m_impl->destroyStream(m_impl->stream);
         m_impl->stream = nullptr;
     }
+    qWarning() << "[STREAM][START] create stream start";
     m_impl->stream = m_impl->createStream(m_impl->recognizer);
     if (!m_impl->stream)
     {
@@ -478,6 +477,11 @@ void SherpaOnnxStreamingAsrEngine::startSession()
     m_lastFrameLogMs = -1;
     m_lastPartialText.clear();
     PerfTracer::startTrace("STREAM", m_activeTraceId, "streaming_session_start");
+    qWarning() << "[STREAM][START] create stream done elapsed=" << timer.elapsed() << "ms";
+    if (timer.elapsed() > 500)
+    {
+        qWarning() << "[STREAM][WARN] restart took" << timer.elapsed() << "ms";
+    }
 }
 
 void SherpaOnnxStreamingAsrEngine::acceptAudioFrame(const QByteArray &pcmData,
@@ -630,9 +634,33 @@ void SherpaOnnxStreamingAsrEngine::resetSession()
     m_lastPartialText.clear();
 }
 
+void SherpaOnnxStreamingAsrEngine::discardSession()
+{
+    QElapsedTimer timer;
+    timer.start();
+    PerfTracer::markTrace("STREAM", m_activeTraceId, "streaming_discard_session");
+    m_sessionActive = false;
+#ifdef VOICEFLOW_SHERPA_STREAMING_HEADERS
+    if (m_impl && m_impl->stream && m_impl->destroyStream)
+    {
+        m_impl->destroyStream(m_impl->stream);
+        m_impl->stream = nullptr;
+    }
+#endif
+    m_sessionStartedAtMs = -1;
+    m_lastFrameLogMs = -1;
+    m_lastPartialText.clear();
+    qWarning() << "[STREAM][LIFE] discard stream done elapsed=" << timer.elapsed() << "ms";
+}
+
 bool SherpaOnnxStreamingAsrEngine::isSessionActive() const
 {
     return m_sessionActive;
+}
+
+bool SherpaOnnxStreamingAsrEngine::isInitialized() const
+{
+    return m_initialized;
 }
 
 bool SherpaOnnxStreamingAsrEngine::findStreamingSdk(QString *reason) const

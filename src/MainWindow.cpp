@@ -269,6 +269,7 @@ void MainWindow::setupUi()
     startButton->setStyleSheet(primaryButtonStyle);
     startFileTranscribeButton->setStyleSheet(primaryButtonStyle);
     stopButton->setStyleSheet(normalButtonStyle);
+    stopButton->setEnabled(false);
     fileButton->setStyleSheet(normalButtonStyle);
     aiOptimizeButton->setStyleSheet(aiButtonStyle);
     customPromptButton->setStyleSheet(normalButtonStyle);
@@ -473,13 +474,15 @@ void MainWindow::setupConnections()
 
     connect(startButton, &QPushButton::clicked, this, [this]()
             {
-                currentStatus = "正在监听，请开始说话";
-                runStatusBadge->setText("● 状态：监听中");
+                currentStatus = "正在启动实时语音输入...";
+                runStatusBadge->setText("● 状态：准备中");
                 runStatusBadge->setStyleSheet(
                     "background-color: #eff6ff; border: 1px solid #bfdbfe; border-radius: 18px;"
                     "color: #2563eb; font-size: 13px; padding: 0 12px;");
 
                 startButton->setText("正在输入");
+                startButton->setEnabled(false);
+                stopButton->setEnabled(true);
                 startButton->setStyleSheet(
                     "QPushButton { background-color: #ef4444; color: white; border: none;"
                     "padding: 0 20px; border-radius: 6px; font-size: 14px; font-weight: 700; min-height: 36px; }"
@@ -496,6 +499,7 @@ void MainWindow::setupConnections()
                 runStatusBadge->setStyleSheet(
                     "background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 18px;"
                     "color: #dc2626; font-size: 13px; padding: 0 12px;");
+                stopButton->setEnabled(false);
                 restoreStartButtonStyle();
                 updateStatusBar();
                 emit stopVoiceInputRequested();
@@ -837,6 +841,7 @@ void MainWindow::updateTextDetailLayout()
 
 void MainWindow::restoreStartButtonStyle()
 {
+    startButton->setEnabled(true);
     startButton->setText("开始输入");
     startButton->setStyleSheet(
         "QPushButton { background-color: #2563eb; color: white; border: none;"
@@ -1027,6 +1032,16 @@ void MainWindow::setRunningStatus(const QString &status)
     updateStatusBar();
 }
 
+void MainWindow::setAsrBackendText(const QString &text)
+{
+    asrBackendText = text.trimmed().isEmpty() ? "sherpa-onnx / Paraformer 本地离线识别" : text.trimmed();
+    if (asrInfoLabel)
+    {
+        asrInfoLabel->setText("语音识别：" + asrBackendText + " | 本地处理：VAD 分句 + 标点恢复");
+    }
+    updateStatusBar();
+}
+
 void MainWindow::setLastAsrTime(qint64 ms)
 {
     lastAsrTimeMs = ms;
@@ -1100,7 +1115,7 @@ void MainWindow::updateStatusBar()
         "<span style=\"color:#94a3b8;\"> &nbsp;|&nbsp; </span>"
         "<span>页面：" + pageText.toHtmlEscaped() + "</span>"
         "<span style=\"color:#94a3b8;\"> &nbsp;|&nbsp; </span>"
-        "<span>模型：sherpa-onnx / Paraformer</span>"
+        "<span>模型：" + asrBackendText.toHtmlEscaped() + "</span>"
         "<span style=\"color:#94a3b8;\"> &nbsp;|&nbsp; </span>"
         "<span>AI：" + aiText.toHtmlEscaped() + "</span>"
         "<span style=\"color:#94a3b8;\"> &nbsp;|&nbsp; </span>"

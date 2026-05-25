@@ -2,16 +2,25 @@
 
 ## 实时流式识别说明
 
-项目已预留 sherpa-onnx online streaming 实时流式识别后端。这里的 online 指本地 streaming 识别，不是云服务，不需要联网。streaming 目前是实验功能，默认关闭；未显式开启时，实时语音输入继续使用现有稳定的 offline 分段识别方案。本地文件转写仍然使用 offline/exe 流程。
+项目已接入 sherpa-onnx online streaming 实时流式识别后端。这里的 online 指本地 streaming 识别，不是云服务，不需要联网。实时语音输入默认会优先尝试使用 streaming，以降低用户说话过程中的等待感；如果 streaming 模型、DLL 或运行时依赖不可用，程序会自动回退到稳定的 offline 分段识别方案。本地文件转写仍然使用 offline/exe 流程。
 
-如需实验性启用 streaming 检测：
+如需强制关闭 streaming，可设置：
+
+```powershell
+$env:VOICEFLOW_ENABLE_STREAMING_ASR="0"
+.\VoiceFlowAI.exe
+```
+
+如需明确强制尝试 streaming，可设置：
 
 ```powershell
 $env:VOICEFLOW_ENABLE_STREAMING_ASR="1"
 .\VoiceFlowAI.exe
 ```
 
-当前版本优先保证稳定性。开启 `VOICEFLOW_ENABLE_STREAMING_ASR` 后，程序会检查模型类型、DLL 和 online C API，创建 sherpa online recognizer，并运行一段静音 smoke test。若任一步失败，会自动回退 offline/exe，不应影响“开始输入”。smoke test 通过后会启用麦克风 streaming 输入：partial result 只作为状态提示，VAD 结束后的 final result 才进入正式文本聚合与界面显示。
+当前版本优先保证稳定性。实时语音输入默认优先使用 streaming。为了减少首次点击“开始输入”时的等待，程序会在启动后约 500ms 异步预初始化 streaming recognizer：模型扫描、DLL 检查、运行时加载、recognizer 创建和静音 smoke test 都放在后台执行，不阻塞 UI。若预初始化失败，则自动回退到稳定的 offline 分段识别方案。
+
+streaming recognizer 会在首次初始化成功后常驻复用；后续“停止 → 再开始”只会销毁并重建当前 stream/session，不会重复扫描 DLL、加载模型、LoadLibrary 或运行 smoke test。点击停止时会立即停止接收新的音频帧，并丢弃当前临时 stream，recognizer 会保留到程序退出时再释放。
 
 当前 Windows MinGW 构建会检查 `third_party/sherpa-onnx*/include`、`lib`、`bin`。streaming 后端优先通过运行时加载 `sherpa-onnx-c-api.dll` 接入 online C API，避免直接依赖 `.lib` 链接；如果 DLL、头文件或 streaming 模型不完整，会自动回退到 offline 分段识别。
 
@@ -29,7 +38,7 @@ models/sherpa-onnx/streaming-zh/
 
 ## 性能说明
 
-当前 offline exe 方案每个 chunk 都会启动 `sherpa-onnx-offline.exe` 并加载模型，因此延迟主要集中在进程启动、模型加载和推理阶段。streaming 或常驻 C++ recognizer 可以避免反复启动进程。性能日志会标记 `backend=streaming` 或 `backend=offline-exe`，方便对比实时识别链路耗时。
+当前 offline exe 方案每个 chunk 都会启动 `sherpa-onnx-offline.exe` 并加载模型，因此延迟主要集中在进程启动、模型加载和推理阶段。实时输入默认优先使用 streaming，并在程序启动后异步预初始化常驻 recognizer；点击“开始输入”时通常只创建新的 online stream/session 并启动 AudioRecorder。性能日志会标记 `backend=streaming` 或 `backend=offline-exe`，并输出 `[STREAM][START]` 阶段耗时，方便区分 recognizer 初始化、创建 stream、启动麦克风、第一帧音频和 first partial result 的延迟。
 
 ## Windows ONNX Runtime DLL 版本冲突
 
@@ -58,7 +67,7 @@ logs/perf-YYYYMMDD.log
 
 当前实时识别延迟主要由两部分组成：VAD 静音等待和 ASR 后端识别耗时。默认 `speechEndSilenceMs` 已调整为 `800ms`，用于在响应速度和句子完整性之间折中；该值越小，用户说完后的响应越快，但过小可能导致一句话被自然停顿切碎。
 
-当前 ASR 后端保留稳定的 `sherpa-onnx-offline.exe` 方案。该方案每个 chunk 都会启动进程并加载模型，因此日志中的 `backend=exe` 和 `sherpa_process_elapsed_ms` 通常是主要瓶颈。项目目录中已检测到 sherpa-onnx C/C++ 开发包，后续可以在独立优化中接入常驻 recognizer，让模型只加载一次并复用推理实例；本次仍保留 exe fallback，避免影响现有稳定性。
+实时语音输入会优先复用常驻 streaming recognizer，避免每次点击“开始输入”都重新加载模型；offline/exe 仍作为 fallback 保留，因此日志中的 `backend=offline-exe` 和 `sherpa_process_elapsed_ms` 主要用于定位回退链路的耗时。
 
 过短 chunk 会被跳过并在性能日志中标记 `chunk_skipped_too_short`，避免噪声片段或过短音频触发 sherpa 进程。
 
