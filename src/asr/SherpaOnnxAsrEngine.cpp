@@ -385,6 +385,8 @@ void SherpaOnnxAsrEngine::startTask(const PendingTask &task)
                 result.elapsedMs = activeElapsedTimer.elapsed();
                 PerfTracer::markTrace("SHERPA", activeTask.traceId, "sherpa_process_finished",
                                       QString("elapsed=%1 ms, exitCode=%2").arg(result.elapsedMs).arg(exitCode));
+                PerfTracer::markDurationTrace("ASR", activeTask.traceId, "sherpa_process_elapsed_ms", result.elapsedMs,
+                                              "backend=exe");
                 PerfTracer::warnIfSlow("SHERPA", activeTask.traceId, "sherpa_process", result.elapsedMs, 3000,
                                        "sherpa 识别耗时较长，可能是模型加载/音频过长/CPU压力");
 

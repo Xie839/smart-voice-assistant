@@ -160,6 +160,7 @@ void AsrBackendManager::startTaskOnWorker(int workerIndex, const PendingTask &ta
     }
 
     qDebug() << "[ASR] worker" << workerIndex << "using sherpa-onnx";
+    PerfTracer::markTrace("ASR", task.traceId, "asr_backend_type", "backend=exe");
     worker.sherpaEngine->transcribeAsync(task.wavPath, task.config, task.traceId);
 }
 

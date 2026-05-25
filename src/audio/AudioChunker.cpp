@@ -61,7 +61,7 @@ AudioChunkInfo AudioChunker::saveCurrentChunk(const QString &splitReason, qint64
     info.traceId = QString("chunk-%1").arg(info.sequenceId, 5, 10, QLatin1Char('0'));
     info.wavPath = buildChunkFilePath();
     PerfTracer::markTrace("CHUNK", info.traceId, "chunk_create_start",
-                          QString("duration=%1 ms, samples=%2")
+                          QString("chunk_duration_ms=%1, samples_count=%2, skipped_too_short=false")
                               .arg(info.durationMs)
                               .arg(currentPcm16.size() / int(sizeof(qint16))));
 

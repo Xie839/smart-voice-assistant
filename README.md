@@ -19,6 +19,14 @@ logs/perf-YYYYMMDD.log
 
 日志会记录 VAD 静音等待、chunk WAV 写入、ASR 入队和队列等待、sherpa-onnx 进程耗时、stdout/stderr 字节数、JSON 解析、标点恢复、UI 更新、本地文件转写和 ffmpeg 转换耗时。日志不会打印 API Key、Authorization header、完整识别文本、完整用户文本或完整自定义 prompt。
 
+## 性能优化说明
+
+当前实时识别延迟主要由两部分组成：VAD 静音等待和 ASR 后端识别耗时。默认 `speechEndSilenceMs` 已调整为 `800ms`，用于在响应速度和句子完整性之间折中；该值越小，用户说完后的响应越快，但过小可能导致一句话被自然停顿切碎。
+
+当前 ASR 后端保留稳定的 `sherpa-onnx-offline.exe` 方案。该方案每个 chunk 都会启动进程并加载模型，因此日志中的 `backend=exe` 和 `sherpa_process_elapsed_ms` 通常是主要瓶颈。项目目录中已检测到 sherpa-onnx C/C++ 开发包，后续可以在独立优化中接入常驻 recognizer，让模型只加载一次并复用推理实例；本次仍保留 exe fallback，避免影响现有稳定性。
+
+过短 chunk 会被跳过并在性能日志中标记 `chunk_skipped_too_short`，避免噪声片段或过短音频触发 sherpa 进程。
+
 VoiceFlow AI 是一个基于 Qt 的 Windows 桌面端实时语音转文本工具。  
 当前版本采用 **sherpa-onnx + Paraformer 中文 ONNX** 作为 ASR 后端，并支持 **DeepSeek API 智能文本优化**。
 
