@@ -1,5 +1,7 @@
 #include "FfmpegAudioConverter.h"
 
+#include "../utils/PerfTracer.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
@@ -95,9 +97,11 @@ void FfmpegAudioConverter::cleanupProcess()
 
     m_process->deleteLater();
     m_process = nullptr;
+    m_activeTraceId.clear();
+    m_startedAtMs = -1;
 }
 
-void FfmpegAudioConverter::convertToWavAsync(const QString &inputFilePath, const QString &outputWavPath)
+void FfmpegAudioConverter::convertToWavAsync(const QString &inputFilePath, const QString &outputWavPath, const QString &traceId)
 {
     if (isConverting())
     {
@@ -127,6 +131,10 @@ void FfmpegAudioConverter::convertToWavAsync(const QString &inputFilePath, const
     }
 
     m_process = new QProcess(this);
+    m_activeTraceId = traceId;
+    m_startedAtMs = PerfTracer::nowMs();
+    PerfTracer::markTrace("FFMPEG", m_activeTraceId, "ffmpeg_start",
+                          "input=" + QFileInfo(inputFilePath).fileName());
     const QStringList args = {
         "-y",
         "-i",
@@ -156,12 +164,20 @@ void FfmpegAudioConverter::convertToWavAsync(const QString &inputFilePath, const
                 const QString stderrText = QString::fromUtf8(m_process->readAllStandardError());
 
                 const bool ok = (exitStatus == QProcess::NormalExit && exitCode == 0 && QFileInfo::exists(outputWavPath));
+                const qint64 elapsedMs = m_startedAtMs >= 0 ? PerfTracer::nowMs() - m_startedAtMs : 0;
                 if (ok)
                 {
+                    const double outputMb = QFileInfo(outputWavPath).size() / 1024.0 / 1024.0;
+                    PerfTracer::markTrace("FFMPEG", m_activeTraceId, "ffmpeg_finished",
+                                          QString("elapsed=%1 ms, output_wav_size=%2 MB")
+                                              .arg(elapsedMs)
+                                              .arg(outputMb, 0, 'f', 2));
                     emit conversionFinished(outputWavPath);
                 }
                 else
                 {
+                    PerfTracer::markTrace("FFMPEG", m_activeTraceId, "ffmpeg_failed",
+                                          QString("elapsed=%1 ms, exitCode=%2").arg(elapsedMs).arg(exitCode));
                     emit conversionFailed("ffmpeg 转换失败：" + shortErrorDetail(stderrText, stdoutText));
                 }
 
@@ -183,6 +199,11 @@ void FfmpegAudioConverter::convertToWavAsync(const QString &inputFilePath, const
                 }
             });
 
+    connect(m_process, &QProcess::started, this, [this]()
+            {
+                PerfTracer::markTrace("FFMPEG", m_activeTraceId, "ffmpeg_started");
+            });
     emit conversionStarted();
     m_process->start();
+    PerfTracer::markTrace("FFMPEG", m_activeTraceId, "ffmpeg_process_start");
 }

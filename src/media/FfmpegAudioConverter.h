@@ -18,7 +18,7 @@ public:
     bool isAvailable(QString *reason = nullptr) const;
     bool isConverting() const;
 
-    void convertToWavAsync(const QString &inputFilePath, const QString &outputWavPath);
+    void convertToWavAsync(const QString &inputFilePath, const QString &outputWavPath, const QString &traceId = QString());
 
 signals:
     void conversionStarted();
@@ -31,6 +31,8 @@ private:
 
 private:
     QProcess *m_process = nullptr;
+    QString m_activeTraceId;
+    qint64 m_startedAtMs = -1;
 };
 
 #endif

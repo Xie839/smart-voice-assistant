@@ -22,7 +22,7 @@ public:
     ~SherpaOnnxAsrEngine() override;
 
     bool isAvailable(QString *reason = nullptr) const;
-    void transcribeAsync(const QString &wavPath, const TaskConfig &config);
+    void transcribeAsync(const QString &wavPath, const TaskConfig &config, const QString &traceId = QString());
 
 signals:
     void transcribeStarted(const QString &wavPath);
@@ -32,6 +32,7 @@ signals:
 private:
     struct PendingTask
     {
+        QString traceId;
         QString wavPath;
         TaskConfig config;
     };

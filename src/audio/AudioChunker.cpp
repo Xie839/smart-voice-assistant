@@ -1,11 +1,14 @@
 #include "AudioChunker.h"
 
 #include "WavWriter.h"
+#include "../utils/PerfTracer.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDebug>
 #include <QDir>
+#include <QElapsedTimer>
+#include <QFileInfo>
 #include <QRegularExpression>
 
 AudioChunker::AudioChunker()
@@ -55,7 +58,12 @@ AudioChunkInfo AudioChunker::saveCurrentChunk(const QString &splitReason, qint64
     ++chunkIndex;
     info.chunkIndex = chunkIndex;
     info.sequenceId = nextSequenceId++;
+    info.traceId = QString("chunk-%1").arg(info.sequenceId, 5, 10, QLatin1Char('0'));
     info.wavPath = buildChunkFilePath();
+    PerfTracer::markTrace("CHUNK", info.traceId, "chunk_create_start",
+                          QString("duration=%1 ms, samples=%2")
+                              .arg(info.durationMs)
+                              .arg(currentPcm16.size() / int(sizeof(qint16))));
 
     if (startTimeMs < 0 && endTimeMs < 0)
     {
@@ -83,16 +91,24 @@ AudioChunkInfo AudioChunker::saveCurrentChunk(const QString &splitReason, qint64
         info.endTimeMs = info.startTimeMs + info.durationMs;
     }
 
+    QElapsedTimer writeTimer;
+    writeTimer.start();
+    PerfTracer::markTrace("CHUNK", info.traceId, "chunk_write_start");
     if (!WavWriter::writePcm16ToWav(info.wavPath,
                                     currentPcm16,
                                     format.sampleRate(),
                                     format.channelCount()))
     {
+        info.chunkWriteElapsedMs = writeTimer.elapsed();
+        PerfTracer::markDurationTrace("CHUNK", info.traceId, "chunk_write_failed", info.chunkWriteElapsedMs);
         qDebug() << "Chunk save failed:" << info.wavPath;
         info.wavPath.clear();
     }
     else
     {
+        info.chunkWriteElapsedMs = writeTimer.elapsed();
+        PerfTracer::markDurationTrace("CHUNK", info.traceId, "chunk_write_done", info.chunkWriteElapsedMs,
+                                      "file=" + QFileInfo(info.wavPath).fileName());
         qDebug() << "Chunk saved:" << info.wavPath
                  << "chunkIndex=" << info.chunkIndex
                  << "sequenceId=" << info.sequenceId
@@ -129,6 +145,16 @@ int AudioChunker::currentDurationMs() const
 
     const qint64 sampleFrames = currentPcm16.size() / bytesPerFrame;
     return int(sampleFrames * 1000 / format.sampleRate());
+}
+
+qint64 AudioChunker::nextSequenceIdValue() const
+{
+    return nextSequenceId;
+}
+
+QString AudioChunker::nextTraceId() const
+{
+    return QString("chunk-%1").arg(nextSequenceId, 5, 10, QLatin1Char('0'));
 }
 
 QString AudioChunker::buildChunkFilePath() const

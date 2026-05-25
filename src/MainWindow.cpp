@@ -1,11 +1,14 @@
 #include "MainWindow.h"
 
+#include "utils/PerfTracer.h"
+
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QBoxLayout>
 #include <QClipboard>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -852,11 +855,16 @@ void MainWindow::setRawText(const QString &text)
 
 void MainWindow::handleAsrResult(const AsrResult &result)
 {
+    PerfTracer::markTrace("UI", result.traceId, "result_received",
+                          QString("success=%1, text_len=%2").arg(result.success ? "true" : "false").arg(result.text.size()));
     if (!result.success || result.text.trimmed().isEmpty())
     {
         return;
     }
 
+    QElapsedTimer uiTimer;
+    uiTimer.start();
+    PerfTracer::markTrace("UI", result.traceId, "transcript_assemble_start");
     qint64 gapMs = 0;
     if (lastResultEndTimeMs >= 0 && result.startTimeMs >= 0)
     {
@@ -864,7 +872,16 @@ void MainWindow::handleAsrResult(const AsrResult &result)
     }
 
     const QString assembledText = transcriptAssembler.appendSegment(result.text, gapMs);
+    PerfTracer::markTrace("UI", result.traceId, "transcript_assemble_done",
+                          QString("assembled_len=%1").arg(assembledText.size()));
+    PerfTracer::markTrace("UI", result.traceId, "set_raw_text_start");
     setRawText(assembledText);
+    const qint64 uiMs = uiTimer.elapsed();
+    PerfTracer::markTrace("UI", result.traceId, "set_raw_text_done",
+                          QString("ui_update_ms=%1").arg(uiMs));
+    PerfTracer::warnIfSlow("UI", result.traceId, "ui_update", uiMs, 100,
+                           "UI 更新耗时较长，可能文本过长或主线程阻塞");
+    PerfTracer::markTrace("ASR", result.traceId, "ui_updated");
 
     if (result.endTimeMs >= 0)
     {

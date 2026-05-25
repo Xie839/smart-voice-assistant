@@ -2,6 +2,7 @@
 
 #include "PunctuationProcessor.h"
 #include "TextPostProcessor.h"
+#include "../utils/PerfTracer.h"
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -225,10 +226,10 @@ bool SherpaOnnxAsrEngine::isAvailable(QString *reason) const
     return true;
 }
 
-void SherpaOnnxAsrEngine::transcribeAsync(const QString &wavPath, const TaskConfig &config)
+void SherpaOnnxAsrEngine::transcribeAsync(const QString &wavPath, const TaskConfig &config, const QString &traceId)
 {
     Q_UNUSED(config);
-    pendingQueue.enqueue({wavPath, config});
+    pendingQueue.enqueue({traceId, wavPath, config});
     startNextQueued();
 }
 
@@ -283,11 +284,11 @@ QString SherpaOnnxAsrEngine::extractSherpaText(const QString &stdoutText, QStrin
 
 void SherpaOnnxAsrEngine::startPunctuation(const AsrResult &baseResult, const QString &normalizedText)
 {
-    qDebug() << "[PUNC] raw text =" << normalizedText;
+    qDebug() << "[PUNC] text_len =" << normalizedText.size();
 
     waitingPunctuation = true;
     pendingPunctuationResult = baseResult;
-    punctuationProcessor->punctuateAsync(normalizedText);
+    punctuationProcessor->punctuateAsync(normalizedText, baseResult.traceId);
 }
 
 void SherpaOnnxAsrEngine::startTask(const PendingTask &task)
@@ -296,10 +297,13 @@ void SherpaOnnxAsrEngine::startTask(const PendingTask &task)
     activeTimedOut = false;
     activeCompleted = false;
     activeElapsedTimer.start();
+    PerfTracer::markTrace("SHERPA", task.traceId, "sherpa_prepare_start",
+                          "file=" + QFileInfo(task.wavPath).fileName());
 
     emit transcribeStarted(task.wavPath);
 
     AsrResult baseResult;
+    baseResult.traceId = task.traceId;
     baseResult.wavPath = task.wavPath;
     baseResult.modelName = "sherpa-onnx-paraformer";
 
@@ -313,6 +317,7 @@ void SherpaOnnxAsrEngine::startTask(const PendingTask &task)
     activeExePath = findSherpaExecutable();
     activeTokensPath = findTokensPath();
     activeParaformerPath = findParaformerPath();
+    PerfTracer::markTrace("SHERPA", task.traceId, "sherpa_prepare_done");
 
     if (activeExePath.isEmpty())
     {
@@ -374,15 +379,22 @@ void SherpaOnnxAsrEngine::startTask(const PendingTask &task)
                 }
 
                 AsrResult result;
+                result.traceId = activeTask.traceId;
                 result.wavPath = activeTask.wavPath;
                 result.modelName = "sherpa-onnx-paraformer";
                 result.elapsedMs = activeElapsedTimer.elapsed();
+                PerfTracer::markTrace("SHERPA", activeTask.traceId, "sherpa_process_finished",
+                                      QString("elapsed=%1 ms, exitCode=%2").arg(result.elapsedMs).arg(exitCode));
+                PerfTracer::warnIfSlow("SHERPA", activeTask.traceId, "sherpa_process", result.elapsedMs, 3000,
+                                       "sherpa 识别耗时较长，可能是模型加载/音频过长/CPU压力");
 
                 const QString stdoutText = QString::fromUtf8(activeProcess->readAllStandardOutput());
                 const QString stderrText = QString::fromUtf8(activeProcess->readAllStandardError());
 
-                qDebug() << "[Sherpa] stdout:" << stdoutText;
-                qDebug() << "[Sherpa] stderr:" << stderrText;
+                PerfTracer::markTrace("SHERPA", activeTask.traceId, "sherpa_output_read",
+                                      QString("stdout=%1 bytes, stderr=%2 bytes")
+                                          .arg(stdoutText.toUtf8().size())
+                                          .arg(stderrText.toUtf8().size()));
                 qDebug() << "当前输入音频可能为多声道，sherpa-onnx 默认使用第一个声道，后续可优化为 mono downmix。";
 
                 if (activeTimedOut)
@@ -403,6 +415,10 @@ void SherpaOnnxAsrEngine::startTask(const PendingTask &task)
 
                 QString parseError;
                 const QString rawText = extractSherpaText(stdoutText, &parseError);
+                PerfTracer::markTrace("SHERPA", activeTask.traceId, "parse_json_done",
+                                      QString("json_line_found=%1, extracted_text_length=%2")
+                                          .arg(rawText.isEmpty() ? "no" : "yes")
+                                          .arg(rawText.size()));
                 if (rawText.isEmpty())
                 {
                     result.errorMessage = parseError;
@@ -410,7 +426,11 @@ void SherpaOnnxAsrEngine::startTask(const PendingTask &task)
                     return;
                 }
 
+                PerfTracer::markTrace("TEXT", activeTask.traceId, "normalize_start",
+                                      QString("text_len_before=%1").arg(rawText.size()));
                 const QString cleaned = TextPostProcessor::normalize(rawText);
+                PerfTracer::markTrace("TEXT", activeTask.traceId, "normalize_done",
+                                      QString("text_len_after=%1").arg(cleaned.size()));
                 if (cleaned.isEmpty())
                 {
                     result.errorMessage = "识别结果为空";
@@ -438,6 +458,7 @@ void SherpaOnnxAsrEngine::startTask(const PendingTask &task)
                     }
 
                     AsrResult result;
+                    result.traceId = activeTask.traceId;
                     result.wavPath = activeTask.wavPath;
                     result.modelName = "sherpa-onnx-paraformer";
                     result.elapsedMs = activeElapsedTimer.elapsed();
@@ -446,7 +467,12 @@ void SherpaOnnxAsrEngine::startTask(const PendingTask &task)
                 }
             });
 
+    connect(activeProcess, &QProcess::started, this, [this]()
+            {
+                PerfTracer::markTrace("SHERPA", activeTask.traceId, "sherpa_process_started");
+            });
     activeProcess->start();
+    PerfTracer::markTrace("SHERPA", task.traceId, "sherpa_process_start");
     activeTimeoutTimer->start(kAsrTimeoutMs);
 }
 

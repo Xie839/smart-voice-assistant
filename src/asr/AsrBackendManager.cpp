@@ -1,9 +1,11 @@
 #include "AsrBackendManager.h"
 
 #include <QDebug>
+#include <QFileInfo>
 #include <QMetaObject>
 
 #include "SherpaOnnxAsrEngine.h"
+#include "../utils/PerfTracer.h"
 
 AsrBackendManager::AsrBackendManager(QObject *parent)
     : QObject(parent)
@@ -48,10 +50,14 @@ void AsrBackendManager::transcribeAsync(const AudioChunkInfo &chunkInfo, const T
 {
     PendingTask task;
     task.wavPath = chunkInfo.wavPath;
+    task.traceId = chunkInfo.traceId.trimmed().isEmpty()
+                       ? QString("chunk-%1").arg(chunkInfo.sequenceId, 5, 10, QLatin1Char('0'))
+                       : chunkInfo.traceId;
     task.config = config;
     task.sequenceId = chunkInfo.sequenceId;
     task.startTimeMs = chunkInfo.startTimeMs;
     task.endTimeMs = chunkInfo.endTimeMs;
+    task.enqueueTimeMs = PerfTracer::nowMs();
 
     if (task.sequenceId < 0)
     {
@@ -69,14 +75,28 @@ void AsrBackendManager::transcribeAsync(const AudioChunkInfo &chunkInfo, const T
     }
 
     pendingQueue.enqueue(task);
+    PerfTracer::markTrace("ASR", task.traceId, "asr_enqueue",
+                          QString("queue_size=%1, running=%2/%3, file=%4")
+                              .arg(pendingQueue.size())
+                              .arg(runningCount)
+                              .arg(maxConcurrentAsr)
+                              .arg(QFileInfo(task.wavPath).fileName()));
     tryStartNextTasks();
 }
 
 void AsrBackendManager::transcribeAsync(const QString &wavPath, const TaskConfig &config)
 {
+    transcribeAsync(wavPath, config, QString("file-%1").arg(sequenceSeed, 5, 10, QLatin1Char('0')));
+}
+
+void AsrBackendManager::transcribeAsync(const QString &wavPath, const TaskConfig &config, const QString &traceId)
+{
     AudioChunkInfo info;
     info.wavPath = wavPath;
     info.sequenceId = sequenceSeed++;
+    info.traceId = traceId.trimmed().isEmpty()
+                       ? QString("file-%1").arg(info.sequenceId, 5, 10, QLatin1Char('0'))
+                       : traceId;
     transcribeAsync(info, config);
 }
 
@@ -113,6 +133,15 @@ void AsrBackendManager::startTaskOnWorker(int workerIndex, const PendingTask &ta
     worker.busy = true;
     worker.activeTask = task;
     ++runningCount;
+    const qint64 queueWaitMs = task.enqueueTimeMs >= 0 ? PerfTracer::nowMs() - task.enqueueTimeMs : 0;
+    PerfTracer::markTrace("ASR", task.traceId, "asr_start",
+                          QString("queue_wait=%1 ms, worker=%2, running=%3/%4")
+                              .arg(queueWaitMs)
+                              .arg(workerIndex)
+                              .arg(runningCount)
+                              .arg(maxConcurrentAsr));
+    PerfTracer::warnIfSlow("ASR", task.traceId, "queue_wait", queueWaitMs, 1000,
+                           "ASR 队列等待过长，可能并发数不足或前序任务太慢");
 
     QString reason;
     if (!worker.sherpaEngine->isAvailable(&reason))
@@ -131,7 +160,7 @@ void AsrBackendManager::startTaskOnWorker(int workerIndex, const PendingTask &ta
     }
 
     qDebug() << "[ASR] worker" << workerIndex << "using sherpa-onnx";
-    worker.sherpaEngine->transcribeAsync(task.wavPath, task.config);
+    worker.sherpaEngine->transcribeAsync(task.wavPath, task.config, task.traceId);
 }
 
 AsrResult AsrBackendManager::withTaskMetadata(const AsrResult &rawResult, const PendingTask &task) const
@@ -142,6 +171,7 @@ AsrResult AsrBackendManager::withTaskMetadata(const AsrResult &rawResult, const 
         result.wavPath = task.wavPath;
     }
     result.sequenceId = task.sequenceId;
+    result.traceId = task.traceId;
     result.startTimeMs = task.startTimeMs;
     result.endTimeMs = task.endTimeMs;
     return result;

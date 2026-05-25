@@ -31,6 +31,8 @@ add_executable(VoiceFlowAI
     src/audio/WavWriter.cpp
     src/media/FfmpegAudioConverter.h
     src/media/FfmpegAudioConverter.cpp
+    src/utils/PerfTracer.h
+    src/utils/PerfTracer.cpp
     src/asr/AsrResult.h
     src/asr/TranscriptAssembler.h
     src/asr/TranscriptAssembler.cpp

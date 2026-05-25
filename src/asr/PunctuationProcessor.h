@@ -17,7 +17,7 @@ public:
     ~PunctuationProcessor() override;
 
     bool isAvailable(QString *reason = nullptr) const;
-    void punctuateAsync(const QString &text);
+    void punctuateAsync(const QString &text, const QString &traceId = QString());
 
 signals:
     void punctuateFinished(const QString &punctuatedText);
@@ -36,9 +36,17 @@ private:
 private:
     static constexpr int kPunctuationTimeoutMs = 20000;
 
-    QQueue<QString> pendingTexts;
+    struct PendingText
+    {
+        QString text;
+        QString traceId;
+    };
+
+    QQueue<PendingText> pendingTexts;
     bool running = false;
     QString activeText;
+    QString activeTraceId;
+    qint64 activeStartedAtMs = -1;
     QProcess *activeProcess = nullptr;
     QTimer *activeTimeoutTimer = nullptr;
     bool activeTimedOut = false;
