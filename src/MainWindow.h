@@ -31,6 +31,10 @@ public slots:
     void appendRawText(const QString &text);
     void setRawText(const QString &text);
     void handleAsrResult(const AsrResult &result);
+    void onStreamingPartialResult(const QString &text);
+    void onStreamingFinalResult(const AsrResult &result);
+    bool commitStreamingPartialAsFinal(const QString &traceId = "streaming-partial-fallback");
+    void clearStreamingPreview();
     void resetTranscript();
     void setOptimizedText(const QString &text);
     void setRunningStatus(const QString &status);
@@ -74,6 +78,7 @@ private:
     void restoreRunBadgeStyle();
 
     QString rawText() const;
+    QString confirmedRawText() const;
     QString optimizedText() const;
     QString preferredOutputText() const;
     QString buildExportContent() const;
@@ -81,6 +86,7 @@ private:
     QString chooseLocalFile();
     bool isSupportedMediaFile(const QString &path) const;
     void clearCurrentTexts();
+    void updateStreamingPreviewText(bool force = false);
 
     void reloadHistoryRecords();
     void renderHistoryTable();
@@ -143,6 +149,10 @@ private:
     qint64 lastAsrTimeMs = -1;
     qint64 lastResultEndTimeMs = -1;
     TranscriptAssembler transcriptAssembler;
+    QString streamingPartialText;
+    QString lastStreamingPreviewDisplayText;
+    bool streamingPreviewActive = false;
+    qint64 lastStreamingPreviewUiMs = -1;
 
     bool aiConfigured = false;
     QString aiProvider;

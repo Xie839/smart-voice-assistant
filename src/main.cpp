@@ -399,7 +399,8 @@ int main(int argc, char *argv[])
                      });
 
     QObject::connect(&window, &MainWindow::stopVoiceInputRequested,
-                     &recorder, [&recorder,
+                     &recorder, [&window,
+                                 &recorder,
                                  &streamingAsr,
                                  &streamingRealtimeActive,
                                  &streamingLastSegmentHadFinal]()
@@ -409,6 +410,10 @@ int main(int argc, char *argv[])
                          if (wasStreamingActive)
                          {
                              streamingAsr.finishSession();
+                             if (!streamingLastSegmentHadFinal)
+                             {
+                                 streamingLastSegmentHadFinal = window.commitStreamingPartialAsFinal("streaming-stop-partial");
+                             }
                              streamingAsr.resetSession();
                              streamingRealtimeActive = false;
                              streamingLastSegmentHadFinal = false;
@@ -580,7 +585,8 @@ int main(int argc, char *argv[])
                      });
 
     QObject::connect(&recorder, &AudioRecorder::speechSegmentEnded,
-                     &streamingAsr, [&streamingAsr,
+                     &streamingAsr, [&window,
+                                     &streamingAsr,
                                      &streamingRealtimeActive,
                                      &streamingLastSegmentHadFinal](const QString &traceId, qint64 speechEndMs)
                      {
@@ -592,6 +598,10 @@ int main(int argc, char *argv[])
                          }
                          streamingLastSegmentHadFinal = false;
                          streamingAsr.finishSession();
+                         if (!streamingLastSegmentHadFinal)
+                         {
+                             streamingLastSegmentHadFinal = window.commitStreamingPartialAsFinal(traceId);
+                         }
                          streamingAsr.resetSession();
                          streamingAsr.startSession();
                      });
@@ -599,11 +609,8 @@ int main(int argc, char *argv[])
     QObject::connect(&streamingAsr, &SherpaOnnxStreamingAsrEngine::partialResultReady,
                      &window, [&window](const QString &text)
                      {
-                         const QString preview = text.size() > 40 ? text.left(40) + "..." : text;
-                         if (!preview.trimmed().isEmpty())
-                         {
-                             window.setRunningStatus("正在识别：" + preview);
-                         }
+                         window.onStreamingPartialResult(text);
+                         window.setRunningStatus("正在识别");
                      });
 
     QObject::connect(&streamingAsr, &SherpaOnnxStreamingAsrEngine::finalResultReady,
@@ -614,7 +621,7 @@ int main(int argc, char *argv[])
                              return;
                          }
                          streamingLastSegmentHadFinal = !result.text.trimmed().isEmpty();
-                         window.handleAsrResult(result);
+                         window.onStreamingFinalResult(result);
                          window.setLastAsrTime(result.elapsedMs);
                      });
 
