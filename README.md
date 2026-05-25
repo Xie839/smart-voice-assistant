@@ -1,5 +1,40 @@
 # VoiceFlow AI
 
+## 实时流式识别说明
+
+项目已预留 sherpa-onnx online streaming 实时流式识别后端。这里的 online 指本地 streaming 识别，不是云服务，不需要联网。streaming 目前是实验功能，默认关闭；未显式开启时，实时语音输入继续使用现有稳定的 offline 分段识别方案。本地文件转写仍然使用 offline/exe 流程。
+
+如需实验性启用 streaming 检测：
+
+```powershell
+$env:VOICEFLOW_ENABLE_STREAMING_ASR="1"
+.\VoiceFlowAI.exe
+```
+
+当前版本优先保证稳定性。开启 `VOICEFLOW_ENABLE_STREAMING_ASR` 后，程序会检查模型类型、DLL 和 online C API，创建 sherpa online recognizer，并运行一段静音 smoke test。若任一步失败，会自动回退 offline/exe，不应影响“开始输入”。smoke test 通过后会启用麦克风 streaming 输入：partial result 只作为状态提示，VAD 结束后的 final result 才进入正式文本聚合与界面显示。
+
+当前 Windows MinGW 构建会检查 `third_party/sherpa-onnx*/include`、`lib`、`bin`。streaming 后端优先通过运行时加载 `sherpa-onnx-c-api.dll` 接入 online C API，避免直接依赖 `.lib` 链接；如果 DLL、头文件或 streaming 模型不完整，会自动回退到 offline 分段识别。
+
+partial result 仅作为临时状态展示，不写入历史记录，不触发保存，也不进入 TranscriptAssembler；final result 才会进入正式文本聚合流程。
+
+## 模型目录说明
+
+streaming 中文模型请放入：
+
+```text
+models/sherpa-onnx/streaming-zh/
+```
+
+目录中应包含 `tokens.txt`，并根据模型类型包含 `encoder*.onnx`、`decoder*.onnx`、`joiner*.onnx`，或 CTC streaming 模型的 `model*.onnx`。真实模型文件和三方二进制不提交 Git。
+
+## 性能说明
+
+当前 offline exe 方案每个 chunk 都会启动 `sherpa-onnx-offline.exe` 并加载模型，因此延迟主要集中在进程启动、模型加载和推理阶段。streaming 或常驻 C++ recognizer 可以避免反复启动进程。性能日志会标记 `backend=streaming` 或 `backend=offline-exe`，方便对比实时识别链路耗时。
+
+## Windows ONNX Runtime DLL 版本冲突
+
+`sherpa-onnx-c-api.dll`、`onnxruntime.dll`、`onnxruntime_providers_shared.dll` 必须来自同一个 sherpa-onnx release。若日志出现 `requested API version` / `Current ORT Version`，通常说明加载到了旧的 `onnxruntime.dll`。程序会优先选择同一目录中同时包含这三个 DLL 的 sherpa runtime 目录，并在创建 recognizer 前显式加载这些 DLL；实际路径会写入 `logs/perf-YYYYMMDD.log`。
+
 ## 性能诊断日志
 
 项目支持语音识别全链路耗时诊断，用于定位从 VAD 检测到语音结束、chunk WAV 写入、ASR 排队、sherpa-onnx 进程执行、JSON 解析、标点恢复、文本聚合到 UI 显示的耗时。

@@ -16,6 +16,41 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets Multimedia Network)
 
 qt_standard_project_setup()
 
+option(VOICEFLOW_ENABLE_SHERPA_STREAMING "Enable sherpa-onnx streaming ASR backend" ON)
+set(VOICEFLOW_SHERPA_STREAMING_COMPILED OFF)
+set(VOICEFLOW_SHERPA_STREAMING_HEADERS OFF)
+set(VOICEFLOW_HAS_SHERPA_ONNX_STREAMING 0)
+
+if(VOICEFLOW_ENABLE_SHERPA_STREAMING)
+    file(GLOB VOICEFLOW_SHERPA_C_API_HEADERS
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sherpa-onnx*/include/sherpa-onnx/c-api/c-api.h"
+    )
+    file(GLOB VOICEFLOW_SHERPA_MINGW_LIBS
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sherpa-onnx*/lib/libsherpa-onnx-c-api.a"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sherpa-onnx*/lib/libsherpa-onnx-cxx-api.a"
+    )
+    file(GLOB VOICEFLOW_SHERPA_MSVC_LIBS
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sherpa-onnx*/lib/sherpa-onnx-c-api.lib"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sherpa-onnx*/lib/sherpa-onnx-cxx-api.lib"
+    )
+
+    if(VOICEFLOW_SHERPA_C_API_HEADERS)
+        list(GET VOICEFLOW_SHERPA_C_API_HEADERS 0 VOICEFLOW_SHERPA_C_API_HEADER)
+        get_filename_component(VOICEFLOW_SHERPA_C_API_DIR "${VOICEFLOW_SHERPA_C_API_HEADER}" DIRECTORY)
+        get_filename_component(VOICEFLOW_SHERPA_INCLUDE_DIR "${VOICEFLOW_SHERPA_C_API_DIR}/../.." ABSOLUTE)
+        set(VOICEFLOW_SHERPA_STREAMING_HEADERS ON)
+        set(VOICEFLOW_HAS_SHERPA_ONNX_STREAMING 1)
+    endif()
+
+    if(VOICEFLOW_SHERPA_C_API_HEADERS AND VOICEFLOW_SHERPA_MINGW_LIBS)
+        message(STATUS "sherpa-onnx streaming SDK headers and MinGW-compatible import library found. Streaming backend will use runtime DLL loading.")
+    elseif(MINGW AND VOICEFLOW_SHERPA_C_API_HEADERS AND VOICEFLOW_SHERPA_MSVC_LIBS)
+        message(STATUS "sherpa-onnx C/C++ headers and .lib import libraries found. Streaming backend will avoid linking and use runtime DLL loading.")
+    else()
+        message(WARNING "sherpa-onnx streaming C/C++ SDK was not found. Streaming ASR will compile as fallback-only.")
+    endif()
+endif()
+
 add_executable(VoiceFlowAI
     src/main.cpp
     src/MainWindow.h
@@ -42,6 +77,8 @@ add_executable(VoiceFlowAI
     src/asr/PunctuationProcessor.cpp
     src/asr/SherpaOnnxAsrEngine.h
     src/asr/SherpaOnnxAsrEngine.cpp
+    src/asr/SherpaOnnxStreamingAsrEngine.h
+    src/asr/SherpaOnnxStreamingAsrEngine.cpp
     src/asr/AsrBackendManager.h
     src/asr/AsrBackendManager.cpp
     src/history/HistoryRecord.h
@@ -58,6 +95,17 @@ add_executable(VoiceFlowAI
 )
 
 target_link_libraries(VoiceFlowAI PRIVATE Qt6::Widgets Qt6::Multimedia Qt6::Network)
+
+if(VOICEFLOW_SHERPA_STREAMING_COMPILED)
+    target_compile_definitions(VoiceFlowAI PRIVATE VOICEFLOW_SHERPA_STREAMING_COMPILED=1)
+endif()
+
+if(VOICEFLOW_SHERPA_STREAMING_HEADERS)
+    target_include_directories(VoiceFlowAI PRIVATE "${VOICEFLOW_SHERPA_INCLUDE_DIR}")
+    target_compile_definitions(VoiceFlowAI PRIVATE VOICEFLOW_SHERPA_STREAMING_HEADERS=1)
+endif()
+
+target_compile_definitions(VoiceFlowAI PRIVATE VOICEFLOW_HAS_SHERPA_ONNX_STREAMING=${VOICEFLOW_HAS_SHERPA_ONNX_STREAMING})
 
 set(MINGW_RUNTIME_DLLS
     libgcc_s_seh-1.dll
